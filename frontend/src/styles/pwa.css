@@ -1,0 +1,40 @@
+/* Installed-app chrome: offline banner, update prompt, offline launch screen, install help. */
+.net-banner {
+  position: fixed; z-index: 60; top: calc(var(--sat) + 6px); left: 50%; transform: translateX(-50%);
+  width: max-content; max-width: calc(100vw - 32px);
+  display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 18px;
+  background: var(--glass); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  color: var(--label); font-size: 13px; font-weight: 800; box-shadow: var(--shadow);
+  animation: net-in .35s var(--ease-ios);
+}
+.net-banner svg { width: 16px; height: 16px; color: var(--warning); }
+@keyframes net-in { from { opacity: 0; transform: translate(-50%, -12px); } }
+
+.update-pill {
+  position: fixed; z-index: 60; left: 50%; bottom: calc(var(--sab) + 14px); transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 16px; border-radius: 24px;
+  background: var(--chip-on); color: var(--chip-on-text); font-size: 14px; font-weight: 800; box-shadow: var(--shadow);
+  animation: update-in .45s var(--ease-ios);
+}
+.update-pill button { height: 34px; padding: 0 14px; border-radius: 17px; background: var(--gold); color: #111; font-weight: 900; }
+@keyframes update-in { from { opacity: 0; transform: translate(-50%, 16px); } }
+
+.offline-screen {
+  position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 0 36px; text-align: center; background: var(--bg);
+}
+.offline-screen img { border-radius: 18px; margin-bottom: 8px; }
+.offline-screen b { font-size: 20px; font-weight: 900; }
+.offline-screen p { color: var(--muted); font-size: 15px; line-height: 1.45; max-width: 340px; }
+.offline-screen .btn { margin-top: 8px; min-width: 120px; }
+
+.install-steps { padding: 4px 20px 24px; display: flex; flex-direction: column; gap: 14px; }
+.install-steps li { display: flex; align-items: center; gap: 12px; font-size: 15px; line-height: 1.4; }
+.install-steps ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 14px; }
+.install-steps .n { width: 28px; height: 28px; flex: none; border-radius: 50%; background: var(--surface-2); display: grid; place-items: center; font-size: 14px; font-weight: 900; }
+.install-steps .glyph { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--surface-2); vertical-align: middle; margin: 0 2px; }
+.install-steps .glyph svg { width: 16px; height: 16px; color: var(--blue); }
+.install-steps p { color: var(--muted); font-size: 13px; }
+
+/* iOS: no long-press callout / selection on media and the shutter (hold-to-record) */
+img, video, .shutter { -webkit-touch-callout: none; }

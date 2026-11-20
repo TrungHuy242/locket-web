@@ -1,0 +1,12 @@
+backend/data/
+.env
+__pycache__/
+*.pyc
+locketlam_session.json
+chat_history.json
+my_moments_*.json
+frontend/node_modules/
+frontend/dist/
+.pytest_cache/
+.claude/
+vendor/locketlam/assets/

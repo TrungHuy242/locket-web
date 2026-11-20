@@ -1,0 +1,26 @@
+# Render Blueprint: Free Docker Web Service (no credit card required)
+# Persistent sessions & moment history sync to a PRIVATE Hugging Face Dataset.
+services:
+  - type: web
+    name: locket-web
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /api/health
+    envVars:
+      - key: LOCKET_COOKIE_SECURE
+        value: "1"
+      - key: LOCKET_DATA_DIR
+        value: /home/user/data
+      - key: LOCKET_FFMPEG_THREADS
+        value: "1"
+      - key: LOCKET_THUMBS_MAX_MB
+        value: "60"
+      - key: LOCKET_VIDEO_CACHE_MAX_MB
+        value: "120"
+      - key: HF_TOKEN
+        sync: false
+      - key: LOCKET_HF_REPO
+        sync: false
+      - key: LOCKET_BACKUP_KEY
+        sync: false

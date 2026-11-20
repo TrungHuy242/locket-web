@@ -1,0 +1,24 @@
+# Never bundle local user sessions, synced history, caches or secrets into the image
+backend/data/
+backend/tests/
+.env
+.env.*
+!.env.example
+locketlam_session.json
+chat_history.json
+my_moments_*.json
+
+# Local caches & build outputs (rebuilt cleanly inside Docker)
+__pycache__/
+*.pyc
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+
+# Editor / VCS / unused SDK examples
+.git/
+.gitignore
+.claude/
+vendor/locketlam/examples/
+vendor/locketlam/tests/
+vendor/locketlam/assets/

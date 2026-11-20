@@ -1,0 +1,12 @@
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+requests>=2.31
+pillow>=9.0
+websockets>=12.0
+# video: converting recordings for Locket and H.264 copies of HEVC clips
+imageio-ffmpeg>=0.4.8
+# optional: `python run.py --https` and encrypted cloud state backups (LOCKET_BACKUP_KEY)
+# cryptography>=42
+# optional: persistent state sync to a private Hugging Face Dataset (installed in Dockerfile)
+# huggingface_hub>=0.25

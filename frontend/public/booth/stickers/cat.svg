@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="170" height="160" viewBox="0 0 170 160"><g fill="#ffffff" stroke="#ffffff" stroke-width="14" stroke-linejoin="round" stroke-linecap="round">
+<path d="M36 70 L34 18 Q36 12 43 16 L76 48 Z"/>
+<path d="M134 70 L136 18 Q134 12 127 16 L94 48 Z"/>
+<path d="M42 56 L41 28 L62 46 Z"/><path d="M128 56 L129 28 L108 46 Z"/>
+<ellipse cx="85" cy="94" rx="62" ry="52"/>
+<path d="M76 46 q4 12 0 20 M85 44 q3 13 0 22 M94 46 q-4 12 0 20"/>
+<ellipse cx="85" cy="114" rx="30" ry="22"/>
+<circle cx="62" cy="94" r="6.5"/><circle cx="108" cy="94" r="6.5"/><circle cx="64.275" cy="91.4" r="2.275"/><circle cx="110.275" cy="91.4" r="2.275"/>
+<path d="M80 106 L90 106 L85 112 Z"/><path d="M78.6 114 Q81.8 118.8 85 114 Q88.2 118.8 91.4 114"/>
+<path d="M30 104 L54 108 M30 116 L54 114 M140 104 L116 108 M140 116 L116 114"/>
+<ellipse cx="52" cy="112" rx="7" ry="4.5"/><ellipse cx="118" cy="112" rx="7" ry="4.5"/></g>
+<path d="M36 70 L34 18 Q36 12 43 16 L76 48 Z" fill="#c9ced8" stroke="#5b3a36" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M134 70 L136 18 Q134 12 127 16 L94 48 Z" fill="#c9ced8" stroke="#5b3a36" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M42 56 L41 28 L62 46 Z" fill="#ffc7d4"/><path d="M128 56 L129 28 L108 46 Z" fill="#ffc7d4"/>
+<ellipse cx="85" cy="94" rx="62" ry="52" fill="#c9ced8" stroke="#5b3a36" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M76 46 q4 12 0 20 M85 44 q3 13 0 22 M94 46 q-4 12 0 20" stroke="#9aa1ae" stroke-width="5" stroke-linecap="round" fill="none"/>
+<ellipse cx="85" cy="114" rx="30" ry="22" fill="#ffffff"/>
+<circle cx="62" cy="94" r="6.5" fill="#3a2724"/><circle cx="108" cy="94" r="6.5" fill="#3a2724"/><circle cx="64.275" cy="91.4" r="2.275" fill="#fff"/><circle cx="110.275" cy="91.4" r="2.275" fill="#fff"/>
+<path d="M80 106 L90 106 L85 112 Z" fill="#ff8fab" stroke="#ff8fab" stroke-width="2" stroke-linejoin="round"/><path d="M78.6 114 Q81.8 118.8 85 114 Q88.2 118.8 91.4 114" fill="none" stroke="#3a2724" stroke-width="3" stroke-linecap="round"/>
+<path d="M30 104 L54 108 M30 116 L54 114 M140 104 L116 108 M140 116 L116 114" stroke="#5b3a36" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+<ellipse cx="52" cy="112" rx="7" ry="4.5" fill="#ff9eb5" opacity=".75"/><ellipse cx="118" cy="112" rx="7" ry="4.5" fill="#ff9eb5" opacity=".75"/></svg>
