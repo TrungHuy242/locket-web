@@ -79,7 +79,8 @@ export const appStore = createStore({
 
 // Sync unread count into the browser tab title: "(3) Locket"
 if (typeof document !== 'undefined') {
-  appStore.subscribe((s) => {
+  appStore.subscribe(() => {
+    const s = appStore.get();
     const total = (s.unread || 0) + (s.notifUnread || 0);
     document.title = s.user && total > 0 ? `(${total > 99 ? '99+' : total}) Locket` : 'Locket';
   });

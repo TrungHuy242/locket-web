@@ -10,7 +10,7 @@ export function createStore(initial) {
     set(patch) {
       const next = typeof patch === 'function' ? patch(state) : patch;
       state = { ...state, ...next };
-      listeners.forEach((fn) => fn());
+      listeners.forEach((fn) => fn(state));
     },
     subscribe(fn) {
       listeners.add(fn);

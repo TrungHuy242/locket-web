@@ -90,16 +90,22 @@ export function App() {
     if (target) setTimeout(() => nav.openRoot(target), 60);
   }, []);
 
-  const checkSession = useCallback(() => api.session()
-    .then((s) => (s.authenticated ? start(s) : setPhase('login')))
-    .catch((err) => {
+  const checkSession = useCallback(async () => {
+    let s;
+    try {
+      s = await api.session();
+    } catch (err) {
       if (err.status === 0 || err.status === 502 || err.status === 503 || err.status === 504) {
         setPhase('offline');
         return;
       }
       setPhase('login');
       ui.error('Không kết nối được máy chủ.', 3200);
-    }), [start]);
+      return;
+    }
+    if (s?.authenticated) start(s);
+    else setPhase('login');
+  }, [start]);
 
   const retry = useCallback(async () => {
     setRetrying(true);
