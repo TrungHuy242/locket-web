@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom';
 import { loadStyle, saveStyle } from '../lib/boothConfig.js';
 import { Icon } from '../lib/icons.jsx';
+import { useSiteConfig } from '../lib/siteConfig.js';
 import { downloadBlob } from '../lib/format.js';
 import { FILTERS, filteredCanvas } from '../lib/filters.js';
 import { BOOTH_SIZE, drawSquare } from '../lib/cameraMedia.js';
@@ -71,6 +72,7 @@ export function PhotoboothEditor({
   onPost,
 }) {
   const [entered, setEntered] = useState(false);
+  const boothVideoEnabled = useSiteConfig((s) => s.features.boothVideo);
   const [tab, setTab] = useState('frame');
   const [filter, setFilter] = useState(initialFilter || 'none');
   const [amount, setAmount] = useState(initialAmount ?? 1);
@@ -894,7 +896,7 @@ export function PhotoboothEditor({
 
         <div className="booth-actions">
           <Button variant="secondary" icon="camera" disabled={busy} onClick={() => { onRetake('all'); history.back(); }}>Chụp lại</Button>
-          <Button variant="tinted" icon="film" disabled={busy} onClick={postVideo}>Video động</Button>
+          {boothVideoEnabled ? <Button variant="tinted" icon="film" disabled={busy} onClick={postVideo}>Video động</Button> : null}
           <Button variant="primary" icon="send" disabled={busy} onClick={postPhoto}>Đăng Locket</Button>
         </div>
       </div>

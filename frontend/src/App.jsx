@@ -1,7 +1,9 @@
 // Routes between the sign-in page and the app shell (sidebar + home + pushed pages).
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { api, setUnauthorizedHandler } from './api.js';
-import { appStore, resetApp } from './store.js';
+import { appStore, resetApp, useApp } from './store.js';
+import { Icon } from './lib/icons.jsx';
+import { loadSiteConfig, useSiteConfig } from './lib/siteConfig.js';
 import { Overlays, ui } from './ui/overlays.jsx';
 import { View, nav, useNav } from './ui/nav.jsx';
 import { Login } from './screens/Login.jsx';
@@ -24,10 +26,71 @@ const Profile = page(loaders.profile, 'Profile');
 const Settings = page(loaders.profile, 'Settings');
 const Memories = page(loaders.memories, 'Memories');
 const Notifications = page(loaders.notifications, 'Notifications');
+// Admin is intentionally NOT in `loaders` so normal users download 0 bytes of Admin code.
+const Admin = lazy(() => import('./screens/Admin.jsx').then((m) => ({ default: m.Admin })));
 const prefetchPages = () => Object.values(loaders).forEach((load) => load().catch(() => {}));
 import { AppStatus, ErrorBoundary, OfflineScreen } from './components/AppStatus.jsx';
 
-const SCREENS = { profile: Profile, settings: Settings, friends: FriendsPage, chat: ChatList, thread: ThreadPage, memories: Memories, friend: FriendProfile, notifications: Notifications };
+const SCREENS = {
+  profile: Profile,
+  settings: Settings,
+  friends: FriendsPage,
+  chat: ChatList,
+  thread: ThreadPage,
+  memories: Memories,
+  friend: FriendProfile,
+  notifications: Notifications,
+  admin: Admin,
+};
+
+function AnnouncementBanner() {
+  const ann = useSiteConfig((s) => s.announcement);
+  const [dismissedKey, setDismissedKey] = useState(() => {
+    try { return sessionStorage.getItem('locket.dismissBanner') || ''; } catch { return ''; }
+  });
+  if (!ann?.enabled || !ann.text) return null;
+  const sig = `${ann.type}|${ann.text}|${ann.link || ''}`;
+  if (dismissedKey === sig) return null;
+  const dismiss = () => {
+    setDismissedKey(sig);
+    try { sessionStorage.setItem('locket.dismissBanner', sig); } catch { /* ignore */ }
+  };
+  return (
+    <div className={`site-banner ${ann.type || 'info'}`} role="status">
+      <span className="site-banner-ic"><Icon name="megaphone" /></span>
+      <span className="site-banner-text">{ann.text}</span>
+      {ann.link ? (
+        <a
+          className="site-banner-link"
+          href={ann.link}
+          target={ann.link.startsWith('/') ? undefined : '_blank'}
+          rel={ann.link.startsWith('/') ? undefined : 'noopener noreferrer'}
+        >
+          {ann.linkLabel || 'Xem thêm'}
+        </a>
+      ) : null}
+      <button type="button" className="site-banner-x" aria-label="Đóng thông báo" onClick={dismiss}>
+        <Icon name="closeSm" />
+      </button>
+    </div>
+  );
+}
+
+function MaintenanceScreen({ onRetry, onOpenAdmin }) {
+  const appName = useSiteConfig((s) => s.appName);
+  const message = useSiteConfig((s) => s.maintenance.message);
+  return (
+    <div className="maint-screen">
+      <div className="maint-card">
+        <div className="maint-ic"><Icon name="wrench" /></div>
+        <h1>{appName} đang bảo trì</h1>
+        <p>{message}</p>
+        <button type="button" className="btn btn-primary" onClick={onRetry}>Kiểm tra lại</button>
+        <button type="button" className="link" onClick={onOpenAdmin}>Chủ sở hữu? Mở trang Quản trị</button>
+      </div>
+    </div>
+  );
+}
 
 function Shell({ onSignOut }) {
   const stack = useNav();
@@ -50,7 +113,7 @@ function Shell({ onSignOut }) {
             const Screen = SCREENS[view.type];
             const root = stack.findIndex((v) => !v.closing) === i;
             return (
-              <View key={view.id} view={{ ...view, root }} under={underOf(i)}>
+              <View key={view.id} view={{ ...view, root }} under={underOf(i)} className={view.type === 'admin' ? 'admin-view' : ''}>
                 <ErrorBoundary inline onClose={() => nav.pop(view.id)}>
                   <Suspense fallback={<div className="empty page-loading"><span className="spinner" /></div>}>
                     <Screen view={view} onSignOut={onSignOut} />
@@ -68,9 +131,33 @@ function Shell({ onSignOut }) {
 // Sections a home-screen shortcut (manifest "shortcuts") may open: /?open=chat etc.
 const SHORTCUTS = { chat: 'chat', notifications: 'notifications', memories: 'memories', friends: 'friends' };
 
+const isAdminHash = () => typeof window !== 'undefined' && window.location.hash.toLowerCase() === '#admin';
+
 export function App() {
   const [phase, setPhase] = useState('boot');   // boot | login | app | offline
   const [retrying, setRetrying] = useState(false);
+  const [hashAdmin, setHashAdmin] = useState(isAdminHash);
+  const isAdmin = useApp((s) => s.isAdmin);
+  const maintenanceOn = useSiteConfig((s) => s.maintenance.enabled);
+
+  const openHashAdmin = useCallback(() => {
+    if (window.location.hash.toLowerCase() !== '#admin') window.location.hash = 'admin';
+    setHashAdmin(true);
+  }, []);
+
+  const closeHashAdmin = useCallback(() => {
+    if (window.location.hash.toLowerCase() === '#admin') {
+      window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+    }
+    setHashAdmin(false);
+    loadSiteConfig();
+  }, []);
+
+  useEffect(() => {
+    const onHash = () => setHashAdmin(isAdminHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   const signOut = useCallback(() => {
     nav.closeAll();
@@ -81,7 +168,7 @@ export function App() {
 
   const start = useCallback((session) => {
     resetApp({ clearCache: false });
-    appStore.set({ user: session.user });
+    appStore.set({ user: session.user, isAdmin: !!session.isAdmin });
     setPhase('app');
     (window.requestIdleCallback || ((fn) => setTimeout(fn, 1500)))(prefetchPages);
     const params = new URLSearchParams(window.location.search);
@@ -93,7 +180,8 @@ export function App() {
   const checkSession = useCallback(async () => {
     let s;
     try {
-      s = await api.session();
+      const [sessionRes] = await Promise.all([api.session(), loadSiteConfig()]);
+      s = sessionRes;
     } catch (err) {
       if (err.status === 0 || err.status === 502 || err.status === 503 || err.status === 504) {
         setPhase('offline');
@@ -103,8 +191,14 @@ export function App() {
       ui.error('Không kết nối được máy chủ.', 3200);
       return;
     }
-    if (s?.authenticated) start(s);
-    else setPhase('login');
+    if (s?.authenticated) {
+      start(s);
+    } else {
+      setPhase('login');
+      if (s?.banned) {
+        ui.error(`Tài khoản đã bị hạn chế truy cập.${s.reason ? ` Lý do: ${s.reason}` : ''}`, 4500);
+      }
+    }
   }, [start]);
 
   const retry = useCallback(async () => {
@@ -142,16 +236,28 @@ export function App() {
     checkSession();
   }, [signOut, checkSession]);
 
+  const showMaintenance = maintenanceOn && !isAdmin && !hashAdmin && phase !== 'boot' && phase !== 'offline';
+
   return (
     <div className="shell">
       {phase === 'offline' ? <OfflineScreen onRetry={retry} busy={retrying} /> : null}
-      {phase === 'app' ? <Shell onSignOut={signOut} /> : phase === 'offline' ? null : (
+      {showMaintenance ? (
+        <MaintenanceScreen onRetry={retry} onOpenAdmin={openHashAdmin} />
+      ) : phase === 'app' ? <Shell onSignOut={signOut} /> : phase === 'offline' ? null : (
         <div className="screen">
           <main id="app">
-            {phase === 'login' ? <Login onAuthenticated={start} /> : null}
+            {phase === 'login' ? <Login onAuthenticated={start} onOpenAdmin={openHashAdmin} /> : null}
           </main>
         </div>
       )}
+      {!hashAdmin && !showMaintenance && phase !== 'offline' ? <AnnouncementBanner /> : null}
+      {hashAdmin ? (
+        <ErrorBoundary inline title="Không mở được trang Quản trị" onClose={closeHashAdmin}>
+          <Suspense fallback={<div className="admin-standalone"><div className="empty" style={{ marginTop: 80 }}><span className="spinner lg" /></div></div>}>
+            <Admin standalone onClose={closeHashAdmin} />
+          </Suspense>
+        </ErrorBoundary>
+      ) : null}
       <AppStatus banner={phase !== 'offline'} />
       <Overlays />
     </div>

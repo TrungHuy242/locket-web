@@ -6,6 +6,7 @@ import { Avatar } from '../components/Avatar.jsx';
 import { MemoryViewer } from '../components/MemoryViewer.jsx';
 import { Icon } from '../lib/icons.jsx';
 import { downloadBlob, fullDate, thumb } from '../lib/format.js';
+import { useSiteConfig } from '../lib/siteConfig.js';
 import { Navbar, nav } from '../ui/nav.jsx';
 import { ui } from '../ui/overlays.jsx';
 import { appStore } from '../store.js';
@@ -37,6 +38,7 @@ function useDebounced(value, ms) {
 
 /* ------------------------------------------------------------------ page */
 export function Memories({ view }) {
+  const zipEnabled = useSiteConfig((s) => s.features.zipExport);
   const [query, setQuery] = useState('');
   const q = useDebounced(query.trim(), 300);
   const [kind, setKind] = useState('all');
@@ -208,7 +210,9 @@ export function Memories({ view }) {
         right={(
           <span className="nav-actions">
             <button type="button" className="icon-btn pressable" aria-label="Thống kê & Recap" title="Thống kê & Recap" onClick={openRecap}><Icon name="chart" /></button>
-            <button type="button" className={`icon-btn pressable ${selecting ? 'on' : ''}`} aria-label={selecting ? 'Hủy chọn' : 'Chọn nhiều để tải ZIP'} title="Chọn nhiều để tải ZIP" onClick={toggleSelectMode}><Icon name="checkSquare" /></button>
+            {zipEnabled ? (
+              <button type="button" className={`icon-btn pressable ${selecting ? 'on' : ''}`} aria-label={selecting ? 'Hủy chọn' : 'Chọn nhiều để tải ZIP'} title="Chọn nhiều để tải ZIP" onClick={toggleSelectMode}><Icon name="checkSquare" /></button>
+            ) : null}
           </span>
         )} />
       <div className="view-scroll mem-scroll" ref={scrollRef}>

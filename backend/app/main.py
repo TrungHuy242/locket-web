@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -32,9 +33,11 @@ from pydantic import BaseModel, Field
 
 from . import cache as disk_cache
 from . import captions, config, state_sync, tools, video
+from .admin_routes import is_request_admin, router as admin_router
+from .admin_store import admin_store
 from .providers.base import AuthExpired, Provider, ProviderError
 from .providers.live import LiveProvider
-from .sessions import store
+from .sessions import provider_identity, store
 
 config.configure_logging()
 log = logging.getLogger(__name__)
@@ -89,10 +92,12 @@ class _SelectiveGZipMiddleware:
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     await run_in_threadpool(state_sync.start)
+    await run_in_threadpool(admin_store.reload_from_disk)
     try:
         yield
     finally:
         await _close_media_client()
+        await run_in_threadpool(admin_store.flush)
         await run_in_threadpool(state_sync.stop)
 
 
@@ -103,12 +108,34 @@ app.add_middleware(_SelectiveGZipMiddleware, minimum_size=500)
 # --------------------------------------------------------------------------- plumbing
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    if request.url.path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS"):
+    path = request.url.path
+    is_api = path.startswith("/api/")
+    if is_api and request.method not in ("GET", "HEAD", "OPTIONS"):
         # Cookies are SameSite=Strict; the custom header adds a second CSRF barrier,
         # since a cross-site form cannot set it.
         if request.headers.get("x-locket-client") != "web":
             return JSONResponse({"error": "Yêu cầu không hợp lệ."}, status_code=403)
-    response = await call_next(request)
+    t0 = time.perf_counter() if is_api else 0.0
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        if is_api:
+            admin_store.record_request(
+                request.method,
+                path,
+                500,
+                (time.perf_counter() - t0) * 1000.0,
+                detail=f"{type(exc).__name__}: {exc}",
+            )
+        raise
+    if is_api and path != "/api/health":
+        admin_store.record_request(
+            request.method,
+            path,
+            response.status_code,
+            (time.perf_counter() - t0) * 1000.0,
+            detail=getattr(request.state, "err_detail", ""),
+        )
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -119,8 +146,7 @@ async def security_headers(request: Request, call_next):
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; "
         "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     )
-    path = request.url.path
-    if path.startswith("/api/"):
+    if is_api:
         response.headers.setdefault("Cache-Control", "no-store")
     elif path.startswith("/assets/"):
         # Vite file names carry a content hash: cache them for good (the service worker precaches them too)
@@ -136,6 +162,7 @@ async def security_headers(request: Request, call_next):
 @app.exception_handler(ProviderError)
 async def provider_error_handler(request: Request, exc: ProviderError):
     if exc.status >= 500:
+        request.state.err_detail = exc.message
         log.warning("Provider error %s on %s %s: %s", exc.status, request.method, request.url.path, exc.message)
     body = {"error": exc.message}
     if getattr(exc, "unavailable", False):
@@ -147,15 +174,49 @@ async def provider_error_handler(request: Request, exc: ProviderError):
     return response
 
 
+def _is_caller_admin(request: Request, provider: Optional[Provider] = None) -> bool:
+    if is_request_admin(request)[0]:
+        return True
+    if provider is not None:
+        uid, email = provider_identity(provider)
+        if config.is_admin_identity(uid, email):
+            return True
+    return False
+
+
+def _require_feature(request: Request, provider: Provider, flag: str, label: str) -> None:
+    if admin_store.feature_enabled(flag):
+        return
+    if _is_caller_admin(request, provider):
+        return
+    raise HTTPException(status_code=403, detail=f"Tính năng {label} đang được quản trị viên tạm tắt.")
+
+
 def current(request: Request) -> Provider:
-    provider = store.get(request.cookies.get(config.COOKIE_NAME))
+    sid = request.cookies.get(config.COOKIE_NAME)
+    provider = store.get(sid)
     if provider is None:
         raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+    uid, email = provider_identity(provider)
+    is_adm = _is_caller_admin(request, provider)
+    if not is_adm:
+        if uid or email:
+            ban = admin_store.is_banned(uid, email)
+            if ban:
+                store.destroy(sid)
+                reason = f" Lý do: {ban['reason']}" if ban.get("reason") else ""
+                raise HTTPException(status_code=403, detail=f"Tài khoản của bạn đã bị hạn chế truy cập.{reason}")
+        if admin_store.is_maintenance():
+            raise HTTPException(status_code=503, detail=admin_store.maintenance_message())
+    if uid:
+        admin_store.touch_user(uid, email=email)
     return provider
 
 
 @app.exception_handler(HTTPException)
 async def http_error_handler(request: Request, exc: HTTPException):
+    if exc.status_code >= 500:
+        request.state.err_detail = exc.detail if isinstance(exc.detail, str) else f"HTTP {exc.status_code}"
     return JSONResponse({"error": exc.detail if isinstance(exc.detail, str) else "Lỗi"}, status_code=exc.status_code)
 
 
@@ -237,30 +298,66 @@ def _clean_image(data: bytes, max_side: int = 1440, fmt: str = "JPEG") -> bytes:
 class LoginBody(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=1, max_length=256)
+    inviteCode: str = Field(default="", max_length=64)
 
 
 @app.get("/api/session")
-def get_session(request: Request):
-    provider = store.get(request.cookies.get(config.COOKIE_NAME))
+def get_session(request: Request, response: Response):
+    sid = request.cookies.get(config.COOKIE_NAME)
+    provider = store.get(sid)
     if provider is None:
         return {"authenticated": False}
-    return {"authenticated": True, "user": provider.me()}
+    user = provider.me()
+    uid, email = provider_identity(provider)
+    uid = uid or str((user or {}).get("uid") or "")
+    email = email or str((user or {}).get("email") or "")
+    is_adm = is_request_admin(request)[0] or config.is_admin_identity(uid, email)
+    if not is_adm:
+        ban = admin_store.is_banned(uid, email)
+        if ban:
+            store.destroy(sid)
+            response.delete_cookie(config.COOKIE_NAME, path="/")
+            return {"authenticated": False, "banned": True, "reason": ban.get("reason") or ""}
+    if uid:
+        admin_store.touch_user(uid, user_info=user, email=email)
+    return {"authenticated": True, "user": user, "isAdmin": is_adm}
 
 
 @app.post("/api/auth/login")
 def login(body: LoginBody, request: Request, response: Response):
     _throttle(request)
+    email_clean = body.email.strip()
+    is_adm_pre = is_request_admin(request)[0] or config.is_admin_identity(None, email_clean)
+    pre_err = admin_store.check_pre_login(email_clean, is_admin=is_adm_pre)
+    if pre_err is not None:
+        raise HTTPException(status_code=pre_err[0], detail=pre_err[1])
+
     store.destroy(request.cookies.get(config.COOKIE_NAME))
     sid = store.new_id()
-    provider = LiveProvider(store.folder(sid))
+    folder = store.folder(sid)
+    provider = LiveProvider(folder)
     try:
-        user = provider.login(body.email.strip(), body.password)
+        user = provider.login(email_clean, body.password)
     except Exception:
         provider.logout()
+        shutil.rmtree(folder, ignore_errors=True)
         raise
+
+    uid = str((user or {}).get("uid") or "") or provider_identity(provider)[0]
+    is_adm = is_adm_pre or config.is_admin_identity(uid, email_clean)
+    post_err, used_invite = admin_store.check_and_consume_login_access(
+        uid, email_clean, body.inviteCode.strip(), is_admin=is_adm,
+    )
+    if post_err is not None:
+        provider.logout()
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(status_code=post_err[0], detail=post_err[1])
+
     store.register(sid, provider)
     _set_cookie(response, request, sid)
-    return {"authenticated": True, "user": user}
+    client_ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (request.client.host if request.client else "")
+    admin_store.record_login(user, email=email_clean, ip=client_ip, invited=used_invite)
+    return {"authenticated": True, "user": user, "isAdmin": is_adm}
 
 
 @app.post("/api/auth/logout")
@@ -360,8 +457,9 @@ def _unlink_silent(path: Path) -> None:
 
 
 @app.post("/api/memories/export")
-async def memories_export(body: ExportBody, p: Provider = Depends(current)):
+async def memories_export(body: ExportBody, request: Request, p: Provider = Depends(current)):
     """Download up to 60 of the authenticated user's synced moments as an uncompressed ZIP archive."""
+    _require_feature(request, p, "zipExport", "Xuất ZIP Kỷ niệm")
     targets = await run_in_threadpool(p.export_targets, body.ids)
     if not targets:
         raise HTTPException(status_code=404, detail="Không tìm thấy khoảnh khắc nào để tải xuống.")
@@ -425,6 +523,8 @@ async def memories_export(body: ExportBody, p: Provider = Depends(current)):
         raise
 
     filename = f"locket-memories-{datetime.now(timezone.utc).strftime('%Y%m%d')}.zip"
+    uid, _ = provider_identity(p)
+    admin_store.record_event(uid, "export")
     return FileResponse(
         zip_path,
         media_type="application/zip",
@@ -436,6 +536,7 @@ async def memories_export(body: ExportBody, p: Provider = Depends(current)):
 
 @app.post("/api/moments")
 def post_moment(
+    request: Request,
     image: Optional[UploadFile] = File(None),
     video: Optional[UploadFile] = File(None),
     caption: str = Form(""),
@@ -443,11 +544,16 @@ def post_moment(
     overlay_meta: str = Form(""),
     recipients: str = Form("[]"),
     private: bool = Form(False),
+    from_booth: bool = Form(False),
     video_mirror: bool = Form(False),
     video_start: float = Form(0.0, ge=0, le=36000),
     video_length: float = Form(0.0, ge=0, le=60),
     p: Provider = Depends(current),
 ):
+    if from_booth:
+        _require_feature(request, p, "photobooth", "Photobooth")
+        if video is not None:
+            _require_feature(request, p, "boothVideo", "Video động Photobooth")
     try:
         targets = json.loads(recipients or "[]")
         assert isinstance(targets, list) and all(isinstance(t, str) and len(t) < 64 for t in targets)
@@ -470,9 +576,14 @@ def post_moment(
     image_bytes = _clean_image(_read_upload(image, config.MAX_IMAGE_BYTES), 1020, "WEBP") if image is not None else None
     video_path = _save_upload_temp(video, config.MAX_VIDEO_BYTES, prefix="locket-vid-up-") if video is not None else None
     try:
-        return p.post_moment(image_bytes, video_path, caption.strip()[:300], preset or None,
-                             [] if private else targets[:200], private=private, mirror_video=video_mirror,
-                             video_start=video_start, video_length=video_length, overlay_meta=parsed_meta)
+        result = p.post_moment(image_bytes, video_path, caption.strip()[:300], preset or None,
+                               [] if private else targets[:200], private=private, mirror_video=video_mirror,
+                               video_start=video_start, video_length=video_length, overlay_meta=parsed_meta)
+        uid, _ = provider_identity(p)
+        admin_store.record_event(uid, "video" if video_path is not None else "photo")
+        if from_booth:
+            admin_store.record_event(uid, "photobooth")
+        return result
     finally:
         if video_path is not None:
             try:
@@ -628,14 +739,16 @@ def notifications_read(body: NotifReadBody, p: Provider = Depends(current)):
 
 
 @app.get("/api/conversations")
-def conversations(p: Provider = Depends(current)):
+def conversations(request: Request, p: Provider = Depends(current)):
+    _require_feature(request, p, "chat", "Tin nhắn")
     return {"conversations": p.conversations()}
 
 
 @app.get("/api/chats/{peer_uid}")
-def messages(peer_uid: str, limit: int = Query(default=50, ge=1, le=200), before: Optional[int] = Query(default=None, ge=0),
+def messages(request: Request, peer_uid: str, limit: int = Query(default=50, ge=1, le=200), before: Optional[int] = Query(default=None, ge=0),
              p: Provider = Depends(current)):
     """Messages with one friend, oldest -> newest. `before` (ms, from `nextBefore`) pages back through history."""
+    _require_feature(request, p, "chat", "Tin nhắn")
     return p.messages(peer_uid, limit=limit, before=before)
 
 
@@ -700,11 +813,15 @@ async def chat_live(ws: WebSocket, peer_uid: str):
 
 
 @app.post("/api/chats/{peer_uid}")
-def send_message(peer_uid: str, body: MessageBody, p: Provider = Depends(current)):
+def send_message(peer_uid: str, body: MessageBody, request: Request, p: Provider = Depends(current)):
+    _require_feature(request, p, "chat", "Tin nhắn")
     text = body.text.strip()
     if not text and not body.momentId:
         raise HTTPException(status_code=422, detail="Tin nhắn trống.")
-    return p.send_message(peer_uid, text, body.momentId)
+    result = p.send_message(peer_uid, text, body.momentId)
+    uid, _ = provider_identity(p)
+    admin_store.record_event(uid, "message")
+    return result
 
 
 @app.post("/api/chats/{peer_uid}/read")
@@ -855,28 +972,37 @@ async def media(request: Request, u: str = Query(max_length=2000), w: Optional[i
 
 # --------------------------------------------------------------------------- smart tools & sync status
 @app.get("/api/tools/music")
-async def search_music(q: str = Query(min_length=1, max_length=300), p: Provider = Depends(current)):
+async def search_music(request: Request, q: str = Query(min_length=1, max_length=300), p: Provider = Depends(current)):
     """Search songs via iTunes + Deezer fallback or resolve pasted Spotify/Apple/YouTube/SoundCloud links."""
+    _require_feature(request, p, "smartCaptions", "Chú thích thông minh")
     tracks = await tools.search_music(q)
+    uid, _ = provider_identity(p)
+    admin_store.record_event(uid, "music")
     return {"tracks": tracks}
 
 
 @app.get("/api/tools/music/trending")
-async def trending_music(p: Provider = Depends(current)):
+async def trending_music(request: Request, p: Provider = Depends(current)):
     """Return Top Trending Vietnam songs (cached 2h) for instant Music caption discovery."""
+    _require_feature(request, p, "smartCaptions", "Chú thích thông minh")
     return {"tracks": await tools.trending_music(12)}
 
 
 @app.get("/api/tools/weather")
 async def lookup_weather(
+    request: Request,
     q: str = Query(default="", max_length=80),
     lat: Optional[float] = Query(default=None, ge=-90, le=90),
     lon: Optional[float] = Query(default=None, ge=-180, le=180),
     p: Provider = Depends(current),
 ):
     """Fetch live weather + AQI via MET Norway -> Open-Meteo -> wttr.in with VN city lookup & GPS reverse-geocoding."""
+    _require_feature(request, p, "smartCaptions", "Chú thích thông minh")
     try:
-        return await tools.lookup_weather(q=q, lat=lat, lon=lon)
+        res = await tools.lookup_weather(q=q, lat=lat, lon=lon)
+        uid, _ = provider_identity(p)
+        admin_store.record_event(uid, "weather")
+        return res
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LookupError as exc:
@@ -888,16 +1014,23 @@ async def lookup_weather(
 
 @app.get("/api/tools/places")
 async def lookup_places(
+    request: Request,
     q: str = Query(default="", max_length=100),
     lat: Optional[float] = Query(default=None, ge=-90, le=90),
     lon: Optional[float] = Query(default=None, ge=-180, le=180),
     p: Provider = Depends(current),
 ):
     """Resolve GPS coordinates (+ nearby POIs) or search places (with optional GPS proximity bias)."""
+    _require_feature(request, p, "smartCaptions", "Chú thích thông minh")
+    uid, _ = provider_identity(p)
     if q.strip():
-        return {"places": await tools.search_places(q, lat=lat, lon=lon)}
+        res = {"places": await tools.search_places(q, lat=lat, lon=lon)}
+        admin_store.record_event(uid, "places")
+        return res
     if lat is not None and lon is not None:
-        return await tools.reverse_geocode(lat, lon)
+        res = await tools.reverse_geocode(lat, lon)
+        admin_store.record_event(uid, "places")
+        return res
     raise HTTPException(status_code=422, detail="Nhập tên địa điểm hoặc bật vị trí.")
 
 
@@ -915,6 +1048,9 @@ async def sync_now(p: Provider = Depends(current)):
 @app.get("/api/health")
 def health():
     return {"ok": True}
+
+
+app.include_router(admin_router)
 
 
 if not config._flag("LOCKET_SKIP_FRONTEND", False):

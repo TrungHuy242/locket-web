@@ -66,6 +66,13 @@ export const ICONS = {
   square: svg('<rect x="4" y="4" width="16" height="16" rx="4.5"/>', 18),
   strip: svg('<rect x="7.5" y="3" width="9" height="18" rx="2"/><path d="M7.5 9h9M7.5 15h9"/>', 18),
   type: svg('<path d="M5 7V5h14v2M12 5v14M9 19h6"/>', 18),
+  shield: svg('<path d="M12 3 5 6v6c0 4.5 3 7.8 7 9 4-1.2 7-4.5 7-9V6l-7-3z"/><path d="m9.2 12.2 2 2 3.8-4"/>', 20),
+  megaphone: svg('<path d="M3 11v2a2 2 0 0 0 2 2h2l5 4V5L7 9H5a2 2 0 0 0-2 2z"/><path d="M16 9a4 4 0 0 1 0 6M19 6.5a7.5 7.5 0 0 1 0 11"/>', 18),
+  lock: svg('<rect x="5" y="11" width="14" height="10" rx="3"/><path d="M8 11V8a4 4 0 1 1 8 0v3"/>', 18),
+  key: svg('<circle cx="8.5" cy="14.5" r="4"/><path d="m11.5 11.5 8-8M16.5 6.5 19 9M14 9l2 2"/>', 18),
+  ban: svg('<circle cx="12" cy="12" r="8.5"/><path d="m6 6 12 12"/>', 18),
+  wrench: svg('<path d="M14.7 6.3a4.5 4.5 0 0 0-5.8 5.8L4 17l3 3 4.9-4.9a4.5 4.5 0 0 0 5.8-5.8l-2.6 2.6-2.8-.7-.7-2.8z"/>', 18),
+  activity: svg('<path d="M3 12h4l2.5-7 5 14 2.5-7H21"/>', 18),
 };
 
 // SF Symbols that Locket captions reference by name. Unknown names render no icon rather than a guess.
@@ -84,9 +91,13 @@ export const SYMBOLS = {
   'moon.fill': sym('<path d="M20 14.500A8.500 8.500 0 0 1 9.500 4 8.500 8.500 0 1 0 20 14.500z"/>'),
   'sparkles': sym('<path d="m10 3 1.800 5.200L17 10l-5.200 1.800L10 17l-1.800-5.200L3 10l5.200-1.800zM18 14l.900 2.600 2.600.900-2.600.900L18 21l-.900-2.600-2.600-.900 2.600-.900z"/>'),
 };
-['cloud.sun.fill', 'cloud.rain.fill', 'cloud.bolt.fill', 'cloud.snow.fill'].forEach((n) => { SYMBOLS[n] = SYMBOLS['cloud.fill']; });
+// weather glyphs (each condition has its own shape)
+SYMBOLS['cloud.sun.fill'] = sym('<circle cx="15.500" cy="8" r="4"/><path d="M15 1.500h1.200v2H15zM20.300 3.200l.900.900-1.400 1.400-.900-.900zM21.500 7.400h2v1.200h-2z"/><path d="M8 20a4.300 4.300 0 0 1-.500-8.580A5.200 5.200 0 0 1 17.600 11 4.100 4.100 0 0 1 17 20z" stroke="#000" stroke-opacity=".18" stroke-width=".6"/>');
+SYMBOLS['cloud.rain.fill'] = sym('<path d="M7.500 15.500a3.800 3.800 0 0 1-.400-7.580A4.700 4.700 0 0 1 16.300 7.600 3.700 3.700 0 0 1 15.800 15.500z"/><path d="M8.200 17.400l1.300.6-1.400 3.200-1.300-.6zM12.200 17.400l1.300.6-1.400 3.200-1.300-.6zM16.200 17.400l1.300.6-1.400 3.200-1.300-.6z"/>');
+SYMBOLS['cloud.bolt.fill'] = sym('<path d="M7.500 15.500a3.800 3.800 0 0 1-.400-7.580A4.700 4.700 0 0 1 16.300 7.600 3.700 3.700 0 0 1 15.800 15.500z"/><path d="M12.600 14.500 9.500 19.300h2.600l-1 3.700 3.900-5.300h-2.600l1.400-3.200z"/>');
+SYMBOLS['cloud.snow.fill'] = sym('<path d="M7.500 15.500a3.800 3.800 0 0 1-.400-7.580A4.700 4.700 0 0 1 16.300 7.600 3.700 3.700 0 0 1 15.800 15.500z"/><circle cx="8.300" cy="18.600" r="1.100"/><circle cx="12" cy="20.600" r="1.100"/><circle cx="15.700" cy="18.600" r="1.100"/><circle cx="10.200" cy="22.200" r=".9"/><circle cx="13.900" cy="22.200" r=".9"/>');
+SYMBOLS['moon.stars.fill'] = sym('<path d="M17 15.500A7.500 7.500 0 0 1 7.500 5.500a7.500 7.500 0 1 0 9.500 10z"/><path d="m18.500 2.500.700 1.700 1.700.700-1.700.700-.700 1.700-.700-1.700-1.700-.700 1.700-.700zM21 9l.500 1.100 1.100.500-1.100.500L21 12.200l-.500-1.100-1.100-.500 1.100-.500z"/>');
 SYMBOLS['sun.min.fill'] = SYMBOLS['sun.max.fill'];
-SYMBOLS['moon.stars.fill'] = SYMBOLS['moon.fill'];
 SYMBOLS['mappin.and.ellipse'] = SYMBOLS.mappin;
 
 export function Icon({ name }) {

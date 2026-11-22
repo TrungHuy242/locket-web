@@ -71,11 +71,40 @@ SESSIONS_DIR = DATA_DIR / "sessions"   # Firebase tokens, one folder per browser
 ACCOUNTS_DIR = DATA_DIR / "accounts"   # per-account moment history synced from Locket
 THUMBS_DIR = DATA_DIR / "thumbs"       # downscaled image cache
 VIDEO_CACHE_DIR = DATA_DIR / "videos"  # H.264 copies of HEVC clips for browsers without HEVC
+ADMIN_DIR = DATA_DIR / "admin"         # owner dashboard stats, site branding, access rules, audit logs
 
 COOKIE_NAME = "lk_sid"
 COOKIE_SECURE = _flag("LOCKET_COOKIE_SECURE", False)
 SESSION_MAX_AGE = 60 * 60 * 24 * 30
 SESSION_IDLE_SECONDS = _int_env("LOCKET_SESSION_IDLE_SECONDS", 60 * 60 * 12, minimum=60)
+
+
+def _csv_set(name: str, *, lower: bool = False) -> frozenset[str]:
+    raw = os.environ.get(name, "")
+    parts = (p.strip() for p in raw.split(","))
+    if lower:
+        return frozenset(p.lower() for p in parts if p)
+    return frozenset(p for p in parts if p)
+
+
+# Owner / Admin dashboard configuration (via Render environment variables or local .env)
+ADMIN_COOKIE_NAME = "lk_admin"
+ADMIN_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+ADMIN_EMAILS = _csv_set("LOCKET_ADMIN_EMAILS", lower=True)
+ADMIN_UIDS = _csv_set("LOCKET_ADMIN_UIDS", lower=False)
+ADMIN_PASSWORD = os.environ.get("LOCKET_ADMIN_PASSWORD", "").strip()
+
+
+def is_admin_identity(uid: str | None = None, email: str | None = None) -> bool:
+    if uid and str(uid).strip() in ADMIN_UIDS:
+        return True
+    if email and str(email).strip().lower() in ADMIN_EMAILS:
+        return True
+    return False
+
+
+def is_admin_configured() -> bool:
+    return bool(ADMIN_EMAILS or ADMIN_UIDS or ADMIN_PASSWORD)
 
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_VIDEO_BYTES = 200 * 1024 * 1024   # library clips are trimmed / re-encoded server-side
@@ -105,5 +134,5 @@ MEDIA_HOST_ALLOWLIST = (
 )
 MEDIA_HOST_SUFFIX_ALLOWLIST = (".locketcamera.com", ".locket.cam", ".mzstatic.com", ".dzcdn.net")
 
-for _d in (DATA_DIR, SESSIONS_DIR, ACCOUNTS_DIR, THUMBS_DIR, VIDEO_CACHE_DIR):
+for _d in (DATA_DIR, SESSIONS_DIR, ACCOUNTS_DIR, THUMBS_DIR, VIDEO_CACHE_DIR, ADMIN_DIR):
     _d.mkdir(parents=True, exist_ok=True)

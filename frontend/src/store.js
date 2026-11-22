@@ -2,6 +2,7 @@
 import { api } from './api.js';
 import { createStore } from './lib/createStore.js';
 import { getSettings } from './lib/settings.js';
+import { getAppName, siteConfigStore } from './lib/siteConfig.js';
 import { ui } from './ui/overlays.jsx';
 
 export const QUICK_EMOJI = ['💛', '🔥', '😍'];
@@ -63,6 +64,7 @@ function fireBrowserAlert(title, body, tag) {
 
 export const appStore = createStore({
   user: null,
+  isAdmin: false,
   friends: [],
   incoming: [],
   outgoing: [],
@@ -77,13 +79,16 @@ export const appStore = createStore({
   homeView: 'camera',     // 'camera' | 'feed' (which part of the home pager is on screen)
 });
 
-// Sync unread count into the browser tab title: "(3) Locket"
+// Sync unread count + custom appName into the browser tab title: "(3) Huy's Locket"
 if (typeof document !== 'undefined') {
-  appStore.subscribe(() => {
+  const syncTitle = () => {
     const s = appStore.get();
+    const appName = getAppName();
     const total = (s.unread || 0) + (s.notifUnread || 0);
-    document.title = s.user && total > 0 ? `(${total > 99 ? '99+' : total}) Locket` : 'Locket';
-  });
+    document.title = s.user && total > 0 ? `(${total > 99 ? '99+' : total}) ${appName}` : appName;
+  };
+  appStore.subscribe(syncTitle);
+  siteConfigStore.subscribe(syncTitle);
 }
 
 export const useApp = (selector) => appStore.use(selector);
@@ -199,7 +204,7 @@ export function resetApp({ clearCache = true } = {}) {
   chatDrafts.clear();
   if (clearCache) clearFeedCache();
   appStore.set({
-    user: null, friends: [], incoming: [], outgoing: [], blocked: [], friendsLoaded: false,
+    user: null, isAdmin: false, friends: [], incoming: [], outgoing: [], blocked: [], friendsLoaded: false,
     conversations: null, memoriesCache: null, unread: 0,
     notifications: null, notifUnread: 0, notifError: null, homeView: 'camera',
   });

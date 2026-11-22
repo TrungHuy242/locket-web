@@ -177,3 +177,72 @@
 .chat-filters .chip.on { background: var(--chip-on); color: var(--chip-on-text); }
 .chat-filters .chip .cnt { font-size: 12px; opacity: .7; }
 .composer .emoji-btn { margin-left: 0; }
+
+/* ---------- owner branding: announcement banner, maintenance mode, admin entries ---------- */
+.site-banner {
+  position: fixed; left: 50%; top: calc(var(--sat) + 56px); transform: translateX(-50%);
+  z-index: 38; width: max-content; max-width: min(calc(100% - 24px), 420px);
+  display: flex; align-items: center; gap: 9px; padding: 9px 12px 9px 14px;
+  border-radius: 18px; background: var(--glass); color: var(--label);
+  border: 1px solid var(--line); box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(22px) saturate(1.6); backdrop-filter: blur(22px) saturate(1.6);
+  font-size: 13px; font-weight: 800; line-height: 1.35;
+}
+@media (min-width: 769px) {
+  .site-banner {
+    top: auto; bottom: 18px; left: auto; right: 20px; transform: none;
+    max-width: 340px;
+  }
+}
+.site-banner.info .site-banner-ic { color: var(--info); }
+.site-banner.update .site-banner-ic { color: var(--gold-text); }
+.site-banner.warning { border-color: rgba(255, 159, 10, .45); }
+.site-banner.warning .site-banner-ic { color: var(--warning); }
+.site-banner.maintenance { border-color: rgba(255, 69, 58, .5); }
+.site-banner.maintenance .site-banner-ic { color: var(--danger); }
+.site-banner-ic { flex: none; display: grid; place-items: center; }
+.site-banner-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.site-banner-link {
+  flex: none; padding: 5px 10px; border-radius: 12px;
+  background: var(--gold); color: var(--on-gold);
+  font-size: 12px; font-weight: 900; text-decoration: none; white-space: nowrap;
+}
+.site-banner-x {
+  flex: none; width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center; color: var(--muted);
+}
+.site-banner-x:hover { background: var(--hover); color: var(--label); }
+
+.maint-screen {
+  position: fixed; inset: 0; z-index: 36; background: var(--bg);
+  display: grid; place-items: center; padding: 24px;
+}
+.maint-card {
+  width: 100%; max-width: 390px; padding: 30px 24px; border-radius: 28px;
+  background: var(--surface); border: 1px solid var(--line); text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.maint-ic {
+  width: 60px; height: 60px; border-radius: 20px; background: var(--gold-soft);
+  color: var(--gold-text); display: grid; place-items: center; margin-bottom: 4px;
+}
+.maint-ic svg { width: 28px; height: 28px; }
+.maint-card h1 { font-size: 24px; font-weight: 900; }
+.maint-card p { font-size: 15px; font-weight: 600; color: var(--muted); line-height: 1.45; margin-bottom: 8px; }
+
+.auth-invite-pill {
+  display: inline-flex; align-items: center; gap: 6px; margin-bottom: 14px;
+  padding: 6px 12px; border-radius: 14px; background: var(--gold-soft); color: var(--gold-text);
+  font-size: 13px; font-weight: 800;
+}
+.auth-invite-pill svg { width: 15px; height: 15px; }
+
+.auth-admin-link {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 12px;
+  padding: 6px 12px; border-radius: 14px; color: var(--muted);
+  font-size: 12px; font-weight: 700; transition: color .15s, background-color .15s;
+}
+.auth-admin-link svg { width: 14px; height: 14px; }
+.auth-admin-link:hover { color: var(--gold-text); background: var(--hover); }
+
+.admin-entry .ic { background: var(--gold-soft) !important; color: var(--gold-text) !important; }

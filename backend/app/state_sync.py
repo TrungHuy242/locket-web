@@ -28,7 +28,7 @@ from . import config
 
 log = logging.getLogger(__name__)
 
-SYNC_FOLDERS = ("sessions", "accounts")
+SYNC_FOLDERS = ("sessions", "accounts", "admin")
 ENC_SUFFIX = ".enc"
 MAX_SYNC_FILE_BYTES = 20 * 1024 * 1024
 
@@ -91,11 +91,12 @@ class HFStateSync:
         return repo_path
 
     def _scan_local(self) -> dict[str, tuple[Path, str]]:
-        """Map relative POSIX paths under sessions/ and accounts/ to (Path, sha256)."""
+        """Map relative POSIX paths under sessions/, accounts/, and admin/ to (Path, sha256)."""
         found: dict[str, tuple[Path, str]] = {}
         roots = {
             "sessions": config.SESSIONS_DIR,
             "accounts": config.ACCOUNTS_DIR,
+            "admin": config.ADMIN_DIR,
         }
         for folder_name, root in roots.items():
             if not root.exists():
@@ -143,11 +144,15 @@ class HFStateSync:
                 repo_type="dataset",
                 token=self.token,
                 local_dir=str(tmp_dir),
-                allow_patterns=["sessions/**", "accounts/**"],
+                allow_patterns=["sessions/**", "accounts/**", "admin/**"],
             ))
             restored = 0
             pushed: dict[str, tuple[str, str]] = {}
-            for folder_name, dest_root in (("sessions", config.SESSIONS_DIR), ("accounts", config.ACCOUNTS_DIR)):
+            for folder_name, dest_root in (
+                ("sessions", config.SESSIONS_DIR),
+                ("accounts", config.ACCOUNTS_DIR),
+                ("admin", config.ADMIN_DIR),
+            ):
                 src_root = snap / folder_name
                 if not src_root.exists():
                     continue

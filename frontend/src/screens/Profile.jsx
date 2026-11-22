@@ -5,6 +5,7 @@ import { Avatar } from '../components/Avatar.jsx';
 import { Icon } from '../lib/icons.jsx';
 import { ago } from '../lib/format.js';
 import { setSetting, useSettings } from '../lib/settings.js';
+import { useSiteConfig } from '../lib/siteConfig.js';
 import { appStore, useApp } from '../store.js';
 import { Navbar, nav } from '../ui/nav.jsx';
 import { ui } from '../ui/overlays.jsx';
@@ -46,7 +47,9 @@ async function squareBlob(file, size = 640) {
 
 export function Profile({ view }) {
   const user = useApp((s) => s.user);
+  const isAdmin = useApp((s) => s.isAdmin);
   const friendCount = useApp((s) => s.friends.length);
+  const appName = useSiteConfig((s) => s.appName);
   const fileRef = useRef(null);
 
   useEffect(() => {
@@ -86,9 +89,17 @@ export function Profile({ view }) {
 
         <div className="invite">
           <Avatar user={user} />
-          <div className="grow"><b>Mời bạn bè tham gia Locket</b><small>{inviteLink().replace('https://', '')}</small></div>
+          <div className="grow"><b>Mời bạn bè tham gia {appName}</b><small>{inviteLink().replace('https://', '')}</small></div>
           <button type="button" className="icon-btn pressable" aria-label="Chia sẻ liên kết" onClick={shareInvite}><Icon name="share" /></button>
         </div>
+
+        {isAdmin ? (
+          <button type="button" className="mem-entry admin-entry" onClick={() => nav.push('admin')}>
+            <span className="ic"><Icon name="shield" /></span>
+            <span className="grow"><b>Bảng điều khiển Quản trị</b><small>Thống kê người dùng, thương hiệu, mã mời &amp; hệ thống</small></span>
+            <span className="chev"><Icon name="chevRight" /></span>
+          </button>
+        ) : null}
 
         <button type="button" className="mem-entry" onClick={() => nav.push('memories')}>
           <span className="ic"><Icon name="heart" /></span>

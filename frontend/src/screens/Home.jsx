@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { Avatar } from '../components/Avatar.jsx';
 import { Icon } from '../lib/icons.jsx';
 import { ago, downloadBlob, thumb, vibrate } from '../lib/format.js';
+import { siteConfigStore, useSiteConfig } from '../lib/siteConfig.js';
 import { RECONNECT_EVENT } from '../components/AppStatus.jsx';
 import { EMOJI_PALETTE, QUICK_EMOJI, appStore, loadFriends, loadNotifications, loadUnread, readFeedCache, refreshMe, useApp, writeFeedCache } from '../store.js';
 import { nav, useSection } from '../ui/nav.jsx';
@@ -100,9 +101,11 @@ const HistoryPanel = memo(function HistoryPanel({ visible, index, filterLabel, f
 
 export function Home({ under }) {
   const user = useApp((s) => s.user);
+  const isAdmin = useApp((s) => s.isAdmin);
   const friends = useApp((s) => s.friends);
   const unread = useApp((s) => s.unread);
   const notifUnread = useApp((s) => s.notifUnread);
+  const chatEnabled = useSiteConfig((s) => s.features.chat) || isAdmin;
   const section = useSection();
   const covered = !!section;
 
@@ -228,19 +231,20 @@ export function Home({ under }) {
     alive.current = true;
     // Stagger startup calls so the server prioritizes /api/feed + first media on constrained CPUs
     loadFeed();
+    const canChat = () => siteConfigStore.get().features.chat || appStore.get().isAdmin;
     const tFriends = setTimeout(() => { if (alive.current) loadFriends(); }, 350);
-    const tUnread = setTimeout(() => { if (alive.current) loadUnread(); }, 900);
+    const tUnread = setTimeout(() => { if (alive.current && canChat()) loadUnread(); }, 900);
     const tNotif = setTimeout(() => { if (alive.current) loadNotifications(); }, 2200);
     const poll = setInterval(() => {
       if (document.hidden) return;
       if (!replyRef.current?.matches(':focus')) loadFeed({ silent: true });
-      loadUnread();
+      if (canChat()) loadUnread();
     }, FEED_POLL_MS);
     const notifPoll = setInterval(() => {
       if (!document.hidden) loadNotifications();
     }, NOTIF_POLL_MS);
     // back online (or the server answers again): refresh everything on screen at once
-    const onReconnect = () => { loadFeed({ silent: true }); loadUnread(); loadNotifications(); loadFriends(); refreshMe(); };
+    const onReconnect = () => { loadFeed({ silent: true }); if (canChat()) loadUnread(); loadNotifications(); loadFriends(); refreshMe(); };
     // back to the app after a while (e.g. from the iPhone app): pick up profile / friend changes
     let hiddenAt = 0;
     const onVisible = () => {
@@ -591,9 +595,11 @@ export function Home({ under }) {
           <button type="button" className="icon-btn" aria-label="Thông báo" onClick={() => nav.openRoot('notifications')}>
             <Icon name="bell" />{notifUnread ? <i className="badge">{notifUnread > 9 ? '9+' : notifUnread}</i> : null}
           </button>
-          <button type="button" className="icon-btn" aria-label="Tin nhắn" onClick={() => nav.openRoot('chat')}>
-            <Icon name="chat" />{unread ? <i className="badge">{unread > 9 ? '9+' : unread}</i> : null}
-          </button>
+          {chatEnabled ? (
+            <button type="button" className="icon-btn" aria-label="Tin nhắn" onClick={() => nav.openRoot('chat')}>
+              <Icon name="chat" />{unread ? <i className="badge">{unread > 9 ? '9+' : unread}</i> : null}
+            </button>
+          ) : null}
         </span>
       </header>
 

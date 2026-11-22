@@ -2,23 +2,26 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { Icon } from '../lib/icons.jsx';
+import { useSiteConfig } from '../lib/siteConfig.js';
 import { Button } from '../ui/kit.jsx';
 
 const STEPS = ['welcome', 'email', 'password'];
 
-function Brand() {
+function Brand({ appName, tagline }) {
   return (
     <>
-      <div className="brand"><span className="brand-mark"><Icon name="heart" /></span>Locket</div>
-      <p className="tagline">Ảnh trực tiếp từ bạn bè, ngay trên màn hình chính</p>
+      <div className="brand"><span className="brand-mark"><Icon name="heart" /></span>{appName}</div>
+      <p className="tagline">{tagline}</p>
     </>
   );
 }
 
-export function Login({ onAuthenticated }) {
+export function Login({ onAuthenticated, onOpenAdmin }) {
+  const site = useSiteConfig((s) => s);
   const [step, setStep] = useState('welcome');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [reveal, setReveal] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -45,7 +48,7 @@ export function Login({ onAuthenticated }) {
     if (!password || busy) return;
     setBusy(true);
     try {
-      const session = await api.login(email.trim(), password);
+      const session = await api.login(email.trim(), password, inviteCode.trim());
       setPassword('');
       onAuthenticated(session);
     } catch (err) {
@@ -59,14 +62,22 @@ export function Login({ onAuthenticated }) {
 
   return (
     <div className="auth">
-      <div className="auth-art"><Brand /></div>
+      <div className="auth-art"><Brand appName={site.appName} tagline={site.tagline} /></div>
       <div className="auth-steps">
         <section className={`auth-step welcome ${position('welcome')}`}>
-          <div className="welcome-brand"><Brand /></div>
-          <h1>Chào mừng đến với Locket</h1>
+          <div className="welcome-brand"><Brand appName={site.appName} tagline={site.tagline} /></div>
+          <h1>Chào mừng đến với {site.appName}</h1>
           <p className="tagline sub">Đăng nhập bằng tài khoản Locket của bạn để xem khoảnh khắc của bạn bè và gửi ảnh.</p>
+          {site.inviteOnly ? (
+            <div className="auth-invite-pill"><Icon name="lock" /> Chế độ riêng tư · Chỉ dành cho người được mời</div>
+          ) : null}
           <button type="button" className="btn btn-gold" onClick={() => go('email')}>Đăng nhập</button>
-          <p className="auth-note">Ứng dụng web không chính thức. Thông tin đăng nhập chỉ được gửi tới máy chủ của bạn và không lưu trên trình duyệt.</p>
+          <p className="auth-note">{site.footerCredit}</p>
+          {site.adminConfigured && onOpenAdmin ? (
+            <button type="button" className="auth-admin-link" onClick={onOpenAdmin}>
+              <Icon name="shield" /> Quản trị chủ sở hữu
+            </button>
+          ) : null}
         </section>
 
         <section className={`auth-step ${position('email')}`}>
@@ -89,6 +100,20 @@ export function Login({ onAuthenticated }) {
                 value={password} onChange={(e) => { setPassword(e.target.value); setError(''); }} />
               <button type="button" onClick={() => setReveal((r) => !r)}>{reveal ? 'Ẩn' : 'Hiện'}</button>
             </label>
+            {site.inviteOnly ? (
+              <label className="field" style={{ marginTop: 10 }}>
+                <input
+                  type="text"
+                  name="inviteCode"
+                  placeholder="Mã mời (vd: LCK-XXXXXX)"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
+                  value={inviteCode}
+                  onChange={(e) => { setInviteCode(e.target.value.toUpperCase()); setError(''); }}
+                />
+              </label>
+            ) : null}
             <p className="auth-error">{error}</p>
             <p className="auth-hint">Quên mật khẩu? Hãy đặt lại trong ứng dụng Locket trên điện thoại.</p>
             <Button type="submit" variant="primary" size="lg" block loading={busy} disabled={!password}>

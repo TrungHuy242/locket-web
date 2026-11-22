@@ -86,8 +86,14 @@ function upload(path, form, onProgress) {
 const enc = encodeURIComponent;
 
 export const api = {
+  siteConfig: () => request('GET', '/api/site-config'),
   session: () => request('GET', '/api/session'),
-  login: (email, password) => request('POST', '/api/auth/login', { email, password }, { quiet401: true }),
+  login: (email, password, inviteCode = '') => request(
+    'POST',
+    '/api/auth/login',
+    inviteCode ? { email, password, inviteCode } : { email, password },
+    { quiet401: true },
+  ),
   logout: () => request('POST', '/api/auth/logout'),
 
   me: () => request('GET', '/api/me'),
@@ -156,7 +162,7 @@ export const api = {
   },
   syncStatus: () => request('GET', '/api/sync/status'),
   syncNow: () => request('POST', '/api/sync/now'),
-  postMoment: ({ image, video, caption, preset, overlayMeta, recipients, isPrivate = false, videoMirror = false, videoStart = 0, videoLength = 0, onProgress }) => {
+  postMoment: ({ image, video, caption, preset, overlayMeta, recipients, isPrivate = false, fromBooth = false, videoMirror = false, videoStart = 0, videoLength = 0, onProgress }) => {
     const form = new FormData();
     if (image) form.append('image', image, 'moment.jpg');
     if (video) {
@@ -171,6 +177,7 @@ export const api = {
     if (overlayMeta) form.append('overlay_meta', JSON.stringify(overlayMeta));
     form.append('recipients', JSON.stringify(recipients || []));
     form.append('private', isPrivate ? 'true' : 'false');
+    if (fromBooth) form.append('from_booth', 'true');
     return upload('/api/moments', form, onProgress);
   },
   deleteMoment: (id) => request('DELETE', `/api/moments/${enc(id)}`),
@@ -200,4 +207,30 @@ export const api = {
   markRead: (peerUid, conversationId, receipt) => request('POST', `/api/chats/${enc(peerUid)}/read`, { conversationId, receipt }),
   reactMessage: (cid, mid, emoji) => request('PUT', `/api/conversations/${enc(cid)}/messages/${enc(mid)}/reaction`, { emoji }),
   deleteMessage: (cid, mid) => request('DELETE', `/api/conversations/${enc(cid)}/messages/${enc(mid)}`),
+
+  admin: {
+    authStatus: () => request('GET', '/api/admin/auth/status'),
+    login: (password) => request('POST', '/api/admin/auth/login', { password }, { quiet401: true }),
+    logout: () => request('POST', '/api/admin/auth/logout'),
+    overview: () => request('GET', '/api/admin/overview'),
+    users: ({ q = '', filter = 'all' } = {}) => {
+      const params = new URLSearchParams({ filter });
+      if (q) params.set('q', q);
+      return request('GET', `/api/admin/users?${params}`);
+    },
+    banUser: (uid, reason = '') => request('POST', `/api/admin/users/${enc(uid)}/ban`, { reason }),
+    unbanUser: (uid) => request('POST', `/api/admin/users/${enc(uid)}/unban`),
+    kickUser: (uid) => request('POST', `/api/admin/users/${enc(uid)}/kick`),
+    kickAll: () => request('POST', '/api/admin/sessions/kick-all'),
+    getConfig: () => request('GET', '/api/admin/config'),
+    saveConfig: (patch) => request('PUT', '/api/admin/config', patch),
+    getAccess: () => request('GET', '/api/admin/access'),
+    saveAccess: (patch) => request('PUT', '/api/admin/access', patch),
+    createInvite: ({ label = '', maxUses = 5, expiresDays = 0 }) => request('POST', '/api/admin/invites', { label, maxUses, expiresDays }),
+    revokeInvite: (code) => request('DELETE', `/api/admin/invites/${enc(code)}`),
+    clearCache: (target = 'all') => request('POST', '/api/admin/ops/clear-cache', { target }),
+    pruneSessions: () => request('POST', '/api/admin/ops/prune-sessions'),
+    syncNow: () => request('POST', '/api/admin/ops/sync-now'),
+    logs: () => request('GET', '/api/admin/logs'),
+  },
 };

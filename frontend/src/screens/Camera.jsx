@@ -7,6 +7,7 @@ import { api } from '../api.js';
 import { Icon } from '../lib/icons.jsx';
 import { clock, downloadBlob, thumb, vibrate, wait } from '../lib/format.js';
 import { getSettings } from '../lib/settings.js';
+import { useSiteConfig } from '../lib/siteConfig.js';
 import { useApp } from '../store.js';
 import { ui } from '../ui/overlays.jsx';
 import { Spinner } from '../ui/kit.jsx';
@@ -30,6 +31,7 @@ import { BoothOverlays, CaptionEditor, FilterTray, PreviewLayers, RecipientsBar 
 export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHistory }) {
   const user = useApp((s) => s.user);
   const friends = useApp((s) => s.friends);
+  const boothEnabled = useSiteConfig((s) => s.features.photobooth);
 
   const vfRef = useRef(null);
   const videoRef = useRef(null);
@@ -86,6 +88,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   const glActive = glOk && !glLost && filterId !== 'none';
   // photobooth
   const [mode, setMode] = useState('photo');                       // photo | booth
+  useEffect(() => { if (!boothEnabled && mode === 'booth') setMode('photo'); }, [boothEnabled, mode]);
   const [booth, setBooth] = useState(() => readJSON(BOOTH_KEY, { shots: 4, countdown: 3, sound: true }));
   const [boothStyle, setBoothStyle] = useState(() => loadStyle(defaultOptions()));
   const [boothLook, setBoothLook] = useState(null);                // filter chosen in the editor
@@ -912,6 +915,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
         videoStart: preview.library ? trimStart : 0, videoLength: preview.library ? CLIP_S : 0, caption, preset: preset?.key,
         overlayMeta: preset?.overlayMeta,
         isPrivate: selected.has(SELF), recipients: [...selected].filter((uid) => uid !== SELF),
+        fromBooth: !!preview.fromBooth,
         videoMirror: !!preview.mirrorVideo,
         // the upload itself is measurable; after it the server converts / stores the file (not measurable)
         onProgress: (f) => setProgress(f >= 1 ? 'processing' : f),
@@ -1063,10 +1067,12 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
           onCaptionInput={onCaptionInput} musicPlaying={previewMusicPlaying} onToggleMusic={togglePreviewMusic} />
       </div>
 
-      <div className="cam-modes" data-when="capture" role="tablist" aria-label="Chế độ chụp">
-        <button type="button" role="tab" aria-selected={mode === 'photo'} className={mode === 'photo' ? 'on' : ''} disabled={!!run} onClick={() => setMode('photo')}>ẢNH</button>
-        <button type="button" role="tab" aria-selected={mode === 'booth'} className={mode === 'booth' ? 'on' : ''} disabled={!!run} onClick={() => { setMode('booth'); loadBoothEditor().catch(() => {}); }}>PHOTOBOOTH</button>
-      </div>
+      {boothEnabled ? (
+        <div className="cam-modes" data-when="capture" role="tablist" aria-label="Chế độ chụp">
+          <button type="button" role="tab" aria-selected={mode === 'photo'} className={mode === 'photo' ? 'on' : ''} disabled={!!run} onClick={() => setMode('photo')}>ẢNH</button>
+          <button type="button" role="tab" aria-selected={mode === 'booth'} className={mode === 'booth' ? 'on' : ''} disabled={!!run} onClick={() => { setMode('booth'); loadBoothEditor().catch(() => {}); }}>PHOTOBOOTH</button>
+        </div>
+      ) : null}
       <div className="cam-controls" data-when="capture">
         <button type="button" className="cam-side" aria-label={mode === 'booth' ? 'Chọn 2–6 ảnh ghép Photobooth' : 'Chọn ảnh hoặc video từ thư viện'}
           onClick={() => (mode === 'booth' ? boothFileRef.current?.click() : fileRef.current?.click())}><Icon name="gallery" /></button>

@@ -32,11 +32,11 @@
   --press: rgba(255, 255, 255, .09);
   --shadow: 0 10px 34px rgba(0, 0, 0, .5);
   /* brand + semantic */
-  --gold: #ffc629;
-  --gold-press: #e5b01f;
-  --gold-text: #ffc629;            /* gold used as text: needs a darker shade on white */
-  --gold-soft: rgba(255, 198, 41, .16);
-  --on-gold: #111;
+  --gold: var(--custom-gold, #ffc629);
+  --gold-press: var(--custom-gold-press, #e5b01f);
+  --gold-text: var(--custom-gold-text-dark, #ffc629);            /* gold used as text: needs a darker shade on white */
+  --gold-soft: var(--custom-gold-soft-dark, rgba(255, 198, 41, .16));
+  --on-gold: var(--custom-on-gold, #111);
   --danger: #ff453a;
   --danger-soft: rgba(255, 69, 58, .16);
   --success: #30d158;
@@ -79,8 +79,8 @@
   --hover: rgba(0, 0, 0, .035);
   --press: rgba(0, 0, 0, .07);
   --shadow: 0 10px 34px rgba(0, 0, 0, .14);
-  --gold-text: #9a6c00;
-  --gold-soft: rgba(255, 198, 41, .24);
+  --gold-text: var(--custom-gold-text-light, #9a6c00);
+  --gold-soft: var(--custom-gold-soft-light, rgba(255, 198, 41, .24));
   --danger: #ff3b30;
   --danger-soft: rgba(255, 59, 48, .12);
   --success: #34c759;
@@ -107,7 +107,7 @@
   --glass: rgba(44, 44, 46, .82); --popover-bg: #262628; --overlay: rgba(0, 0, 0, .55);
   --text: #fff; --label: #fff; --label-2: #d6d6da; --muted: #9a9a9e; --faint: #636366; --placeholder: #8e8e93; --icon-2: #c9c9ce;
   --line: rgba(255, 255, 255, .08); --separator: rgba(255, 255, 255, .16); --hover: rgba(255, 255, 255, .05); --press: rgba(255, 255, 255, .09);
-  --gold-text: #ffc629; --gold-soft: rgba(255, 198, 41, .16); --danger: #ff453a; --danger-soft: rgba(255, 69, 58, .16);
+  --gold-text: var(--custom-gold-text-dark, #ffc629); --gold-soft: var(--custom-gold-soft-dark, rgba(255, 198, 41, .16)); --danger: #ff453a; --danger-soft: rgba(255, 69, 58, .16);
   --bubble-mine: #e9e9eb; --chip-on: #fff; --chip-on-text: #111; --avatar-bg: #3b3b3e; --avatar-text: #d6d6da;
   --skeleton: #1f1f21; --skeleton-shine: rgba(255, 255, 255, .06);
   color: var(--text);
