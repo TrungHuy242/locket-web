@@ -22,16 +22,35 @@ async function request(method, path, body, { quiet401 = false } = {}) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
+  const maxAttempts = method === 'GET' ? 3 : 1;
   let res;
-  try {
-    res = await fetch(path, init);
-  } catch {
-    reportNetwork(false);
-    throw new ApiError(navigator.onLine ? 'Mất kết nối tới máy chủ.' : 'Không có kết nối mạng.', 0);
+  let data = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      res = await fetch(path, init);
+    } catch {
+      if (attempt < maxAttempts - 1 && navigator.onLine) {
+        await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
+        continue;
+      }
+      reportNetwork(false);
+      throw new ApiError(navigator.onLine ? 'Mất kết nối tới máy chủ.' : 'Không có kết nối mạng.', 0);
+    }
+    data = null;
+    try { data = await res.json(); } catch { /* empty or HTML gateway body */ }
+    // Render/Cloudflare edge returns non-JSON 502/503/504 during container swaps: retry quietly
+    const gatewayError = (res.status === 502 || res.status === 503 || res.status === 504) && !data;
+    if (gatewayError) {
+      if (attempt < maxAttempts - 1) {
+        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+        continue;
+      }
+      reportNetwork(false);
+      throw new ApiError('Máy chủ đang khởi động lại. Đang thử kết nối lại…', 0);
+    }
+    break;
   }
   reportNetwork(true);
-  let data = null;
-  try { data = await res.json(); } catch { /* empty body */ }
   if (!res.ok) {
     if (res.status === 401 && !quiet401) onUnauthorized();
     throw new ApiError(data?.error || `Lỗi ${res.status}`, res.status, data);

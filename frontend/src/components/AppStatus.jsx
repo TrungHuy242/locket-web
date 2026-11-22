@@ -43,12 +43,15 @@ export function AppStatus({ banner = true }) {
 }
 
 export function OfflineScreen({ onRetry, busy }) {
+  const online = pwaStore.use((s) => s.online);
   return (
     <div className="offline-screen">
       <img src="/icons/icon-192.png" alt="" width="72" height="72" />
-      <b>Bạn đang ngoại tuyến</b>
-      <p>Locket cần kết nối mạng để đăng nhập và tải khoảnh khắc. Ứng dụng sẽ tự mở lại khi có mạng.</p>
-      <Button variant="primary" loading={busy} onClick={onRetry}>Thử lại</Button>
+      <b>{online ? 'Đang kết nối lại máy chủ…' : 'Bạn đang ngoại tuyến'}</b>
+      <p>{online
+        ? 'Máy chủ có thể đang khởi động lại sau bản cập nhật. Ứng dụng sẽ tự mở lại sau vài giây.'
+        : 'Locket cần kết nối mạng để đăng nhập và tải khoảnh khắc. Ứng dụng sẽ tự mở lại khi có mạng.'}</p>
+      <Button variant="primary" loading={busy} onClick={onRetry}>Thử lại ngay</Button>
     </div>
   );
 }

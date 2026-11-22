@@ -93,7 +93,10 @@ export function App() {
   const checkSession = useCallback(() => api.session()
     .then((s) => (s.authenticated ? start(s) : setPhase('login')))
     .catch((err) => {
-      if (err.status === 0) { setPhase('offline'); return; }   // installed app opened without network
+      if (err.status === 0 || err.status === 502 || err.status === 503 || err.status === 504) {
+        setPhase('offline');
+        return;
+      }
       setPhase('login');
       ui.error('Không kết nối được máy chủ.', 3200);
     }), [start]);

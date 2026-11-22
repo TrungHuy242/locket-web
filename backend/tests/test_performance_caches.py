@@ -206,3 +206,29 @@ def test_friends_and_conversations_ttl_caches_and_invalidation(isolated_data, tm
         assert conv_calls == 2
     finally:
         p.logout()
+
+
+def test_me_warm_cache_across_restart_and_upstream_error_fallback(isolated_data, tmp_path):
+    p1 = _make_provider(tmp_path, uid="uid_me_warm", folder_name="sess_me1")
+    try:
+        p1.client.user.get_profile = lambda: {"uid": "uid_me_warm", "first_name": "Huy", "last_name": "Trung", "username": "trunghuy"}
+        u1 = p1.me(refresh=True)
+        assert u1["name"] == "Huy Trung"
+    finally:
+        p1.close()
+
+    with account_cache._caches_guard:
+        account_cache._caches.clear()
+
+    p2 = _make_provider(tmp_path, uid="uid_me_warm", folder_name="sess_me2")
+    try:
+        p2.client.user.get_profile = lambda: (_ for _ in ()).throw(AssertionError("Warm cache should serve me() without calling get_profile"))
+        u2 = p2.me(refresh=False)
+        assert u2["name"] == "Huy Trung"
+
+        # If refresh=True gets an upstream error dict from SDK, keep fallback instead of wiping profile
+        p2.client.user.get_profile = lambda: {"error": "connection reset"}
+        u3 = p2.me(refresh=True)
+        assert u3["name"] == "Huy Trung"
+    finally:
+        p2.logout()

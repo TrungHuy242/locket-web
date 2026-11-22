@@ -430,10 +430,18 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
 
     def me(self, refresh: bool = False) -> dict:
         # re-read after ME_TTL so a name / avatar changed in the iPhone app shows up here too
+        self._ensure_cache_loaded()
+        now = time.time()
         with self._state_lock:
-            if self._me and not refresh and time.time() - self._me_at < self.ME_TTL:
+            if self._me and not refresh and now - self._me_at < self.ME_TTL:
                 return self._me
-            fallback = self._me
+            cached_self = self._profiles.get(self.uid)
+            if not self._me and cached_self and not refresh and now - cached_self[0] < PROFILE_TTL:
+                self._me = dict(cached_self[1])
+                self._me.setdefault("email", self.client.session.email)
+                self._me_at = cached_self[0]
+                return self._me
+            fallback = self._me or (dict(cached_self[1]) if cached_self else None)
         self._token()
         try:
             profile = self.client.user.get_profile()
@@ -445,12 +453,19 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
             raise ProviderError("Không kết nối được máy chủ Locket.", 502)
         if not isinstance(profile, dict):
             profile = {}
+        if (profile.get("error") or profile.get("errors")) and not profile.get("first_name") and not profile.get("username"):
+            if fallback:
+                return fallback
+            raise ProviderError("Không kết nối được máy chủ Locket.", 502)
         user = self._user_from_profile(profile, self.uid)
         user["email"] = profile.get("email") or self.client.session.email
         user["birthdate"] = profile.get("birthdate")
+        now = time.time()
         with self._state_lock:
             self._me = user
-            self._me_at = time.time()
+            self._me_at = now
+            self._profiles[self.uid] = (now, user)
+        self._persist_cache(profiles=True)
         return user
 
     def update_name(self, first_name: str, last_name: str) -> dict:
