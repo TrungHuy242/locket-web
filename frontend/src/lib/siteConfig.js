@@ -27,7 +27,6 @@ export const DEFAULT_SITE_CONFIG = {
     chat: true,
   },
   inviteOnly: false,
-  adminConfigured: false,
 };
 
 export const siteConfigStore = createStore(DEFAULT_SITE_CONFIG);

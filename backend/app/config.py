@@ -90,9 +90,14 @@ def _csv_set(name: str, *, lower: bool = False) -> frozenset[str]:
 # Owner / Admin dashboard configuration (via Render environment variables or local .env)
 ADMIN_COOKIE_NAME = "lk_admin"
 ADMIN_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
+ADMIN_GATE_COOKIE = "lk_gate"
+ADMIN_GATE_MAX_AGE = 60 * 15
 ADMIN_EMAILS = _csv_set("LOCKET_ADMIN_EMAILS", lower=True)
 ADMIN_UIDS = _csv_set("LOCKET_ADMIN_UIDS", lower=False)
 ADMIN_PASSWORD = os.environ.get("LOCKET_ADMIN_PASSWORD", "").strip()
+# Optional secret portal slug (min 8 chars, e.g. LOCKET_ADMIN_PATH=cua-sau-9284 -> /p/cua-sau-9284).
+# When unset, NO public URL or password login exists: ONLY LOCKET_ADMIN_EMAILS/UIDS can access Admin.
+ADMIN_PATH = os.environ.get("LOCKET_ADMIN_PATH", "").strip().strip("/")
 
 
 def is_admin_identity(uid: str | None = None, email: str | None = None) -> bool:
@@ -103,8 +108,12 @@ def is_admin_identity(uid: str | None = None, email: str | None = None) -> bool:
     return False
 
 
+def has_secret_admin_portal() -> bool:
+    return len(ADMIN_PATH) >= 8 and bool(ADMIN_PASSWORD)
+
+
 def is_admin_configured() -> bool:
-    return bool(ADMIN_EMAILS or ADMIN_UIDS or ADMIN_PASSWORD)
+    return bool(ADMIN_EMAILS or ADMIN_UIDS or has_secret_admin_portal())
 
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_VIDEO_BYTES = 200 * 1024 * 1024   # library clips are trimmed / re-encoded server-side

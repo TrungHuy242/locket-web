@@ -48,8 +48,18 @@ class _MockUserProvider(Provider):
 def _reset_admin_limits():
     with admin_routes._admin_attempts_lock:
         admin_routes._admin_attempts.clear()
+    with admin_routes._gate_attempts_lock:
+        admin_routes._gate_attempts.clear()
     with main._attempts_lock:
         main._attempts.clear()
+
+
+def _unlock_secret_portal(client: TestClient, slug: str, password: str) -> None:
+    r_gate = client.get(f"/p/{slug}", follow_redirects=False)
+    assert r_gate.status_code == 302
+    assert r_gate.headers["location"] == "/?_gate=1"
+    r_login = client.post("/api/admin/auth/login", json={"password": password}, headers=HEADERS)
+    assert r_login.status_code == 200
 
 
 def _make_disk_session(sid: str, uid: str, email: str, *, expires_at: int = 9999999999999, refresh_token: str = "ref"):
@@ -65,23 +75,39 @@ def _make_disk_session(sid: str, uid: str, email: str, *, expires_at: int = 9999
     return prov, folder
 
 
-def test_admin_auth_guards_and_password_flow(isolated_data, monkeypatch):
+def test_stealth_admin_hides_existence_and_secret_portal_flow(isolated_data, monkeypatch):
     _reset_admin_limits()
+    monkeypatch.setattr(config, "ADMIN_PATH", "cua-sau-bi-mat-9284")
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "OwnerSecret!2026")
     monkeypatch.setattr(config, "ADMIN_EMAILS", frozenset({"boss@example.com"}))
     monkeypatch.setattr(config, "ADMIN_UIDS", frozenset())
 
     c = TestClient(main.app)
 
-    # Unauthenticated cannot access admin endpoints
-    assert c.get("/api/admin/overview").status_code == 403
-    assert c.get("/api/admin/users").status_code == 403
-    assert c.post("/api/admin/auth/login", json={"password": "OwnerSecret!2026"}).status_code == 403  # missing CSRF
+    # Public /api/site-config never reveals whether admin exists
+    site_cfg = c.get("/api/site-config").json()
+    assert "adminConfigured" not in site_cfg
 
-    # Status shows configured but not signed in
+    # All unauthenticated probes return 404 Not Found (stealth — never 403/401!)
+    assert c.get("/api/admin/overview").status_code == 404
+    assert c.get("/api/admin/users").status_code == 404
+    assert c.get("/api/admin/auth/status").status_code == 404
+    assert c.post("/api/admin/auth/login", json={"password": "OwnerSecret!2026"}, headers=HEADERS).status_code == 404
+    assert c.get("/p/admin", follow_redirects=False).status_code == 404
+    assert c.get("/p/wrong-secret-path", follow_redirects=False).status_code == 404
+
+    # Missing CSRF header still blocked on mutation
+    assert c.post("/api/admin/auth/login", json={"password": "OwnerSecret!2026"}).status_code == 403
+
+    # Opening the exact secret portal path sets lk_gate and redirects to /?_gate=1
+    r_gate = c.get("/p/cua-sau-bi-mat-9284", follow_redirects=False)
+    assert r_gate.status_code == 302
+    assert r_gate.headers["location"] == "/?_gate=1"
+    assert config.ADMIN_GATE_COOKIE in r_gate.cookies
+
+    # With lk_gate cookie, status responds 200 (not signed in yet)
     st = c.get("/api/admin/auth/status").json()
     assert st["isAdmin"] is False
-    assert st["configured"] is True
     assert st["passwordEnabled"] is True
 
     # Wrong password -> 401
@@ -99,16 +125,28 @@ def test_admin_auth_guards_and_password_flow(isolated_data, monkeypatch):
     assert st2["via"] == "password"
     assert c.get("/api/admin/overview").status_code == 200
 
-    # Logout drops admin cookie
+    # Logout drops admin + gate cookies -> reverts to stealth 404
     out = c.post("/api/admin/auth/logout", headers=HEADERS)
     assert out.status_code == 200
-    assert c.get("/api/admin/overview").status_code == 403
+    assert c.get("/api/admin/overview").status_code == 404
+    assert c.get("/api/admin/auth/status").status_code == 404
+
+
+def test_secret_portal_disabled_without_min_length_path(isolated_data, monkeypatch):
+    _reset_admin_limits()
+    monkeypatch.setattr(config, "ADMIN_PATH", "admin")  # too short (< 8 chars) -> disabled
+    monkeypatch.setattr(config, "ADMIN_PASSWORD", "StrongPass!99")
+    c = TestClient(main.app)
+    assert c.get("/p/admin", follow_redirects=False).status_code == 404
+    assert c.post("/api/admin/auth/login", json={"password": "StrongPass!99"}, headers=HEADERS).status_code == 404
 
 
 def test_admin_password_rate_limit(isolated_data, monkeypatch):
     _reset_admin_limits()
+    monkeypatch.setattr(config, "ADMIN_PATH", "secret-door-7788")
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "RightPass123")
     c = TestClient(main.app)
+    assert c.get("/p/secret-door-7788", follow_redirects=False).status_code == 302
     for _ in range(6):
         r = c.post("/api/admin/auth/login", json={"password": "nope"}, headers=HEADERS)
         assert r.status_code == 401
@@ -117,11 +155,12 @@ def test_admin_password_rate_limit(isolated_data, monkeypatch):
     _reset_admin_limits()
 
 
-def test_admin_via_locket_identity_and_non_admin_denied(isolated_data, monkeypatch):
+def test_admin_via_locket_identity_and_non_admin_stealth_404(isolated_data, monkeypatch):
     _reset_admin_limits()
     monkeypatch.setattr(config, "ADMIN_EMAILS", frozenset({"owner@locket.vn"}))
     monkeypatch.setattr(config, "ADMIN_UIDS", frozenset())
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "")
+    monkeypatch.setattr(config, "ADMIN_PATH", "")
 
     boss_prov = _MockUserProvider("uid_boss", "owner@locket.vn", "Huy", "trunghuy")
     guest_prov = _MockUserProvider("uid_guest", "guest@locket.vn", "Khach", "khach")
@@ -133,15 +172,18 @@ def test_admin_via_locket_identity_and_non_admin_denied(isolated_data, monkeypat
     assert s_boss["isAdmin"] is True
     assert c_boss.get("/api/admin/overview").status_code == 200
 
+    # Regular user never even sees `isAdmin` key in /api/session and gets 404 on /api/admin/*
     c_guest = TestClient(main.app, cookies={config.COOKIE_NAME: "g" * 40})
     s_guest = c_guest.get("/api/session").json()
     assert s_guest["authenticated"] is True
-    assert s_guest["isAdmin"] is False
-    assert c_guest.get("/api/admin/overview").status_code == 403
+    assert "isAdmin" not in s_guest
+    assert c_guest.get("/api/admin/overview").status_code == 404
+    assert c_guest.get("/api/admin/auth/status").status_code == 404
 
 
 def test_telemetry_overview_and_csv_exports(isolated_data, monkeypatch):
     _reset_admin_limits()
+    monkeypatch.setattr(config, "ADMIN_PATH", "portal-telemetry-1")
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "pw123")
     monkeypatch.setattr(config, "ADMIN_EMAILS", frozenset())
     monkeypatch.setattr(config, "ADMIN_UIDS", frozenset())
@@ -160,7 +202,7 @@ def test_telemetry_overview_and_csv_exports(isolated_data, monkeypatch):
     assert admin_store.flush() is True
 
     c = TestClient(main.app)
-    assert c.post("/api/admin/auth/login", json={"password": "pw123"}, headers=HEADERS).status_code == 200
+    _unlock_secret_portal(c, "portal-telemetry-1", "pw123")
 
     ov = c.get("/api/admin/overview").json()
     assert ov["kpi"]["totalUsers"] == 2
@@ -208,6 +250,7 @@ def test_telemetry_overview_and_csv_exports(isolated_data, monkeypatch):
 
 def test_ban_unban_kick_and_kick_all(isolated_data, monkeypatch):
     _reset_admin_limits()
+    monkeypatch.setattr(config, "ADMIN_PATH", "portal-ban-test-1")
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "adminpass")
     monkeypatch.setattr(config, "ADMIN_EMAILS", frozenset({"boss@example.com"}))
     monkeypatch.setattr(config, "ADMIN_UIDS", frozenset({"uid_boss"}))
@@ -227,7 +270,7 @@ def test_ban_unban_kick_and_kick_all(isolated_data, monkeypatch):
     admin_store.record_login({"uid": "uid_u2", "name": "User 2", "username": "u2"}, email="u2@example.com")
 
     c = TestClient(main.app)
-    assert c.post("/api/admin/auth/login", json={"password": "adminpass"}, headers=HEADERS).status_code == 200
+    _unlock_secret_portal(c, "portal-ban-test-1", "adminpass")
 
     # Cannot ban an admin
     assert c.post("/api/admin/users/uid_boss/ban", json={"reason": "test"}, headers=HEADERS).status_code == 400
@@ -264,12 +307,13 @@ def test_ban_unban_kick_and_kick_all(isolated_data, monkeypatch):
 
 def test_invite_only_whitelist_codes_and_max_users(isolated_data, monkeypatch):
     _reset_admin_limits()
+    monkeypatch.setattr(config, "ADMIN_PATH", "portal-invite-123")
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "pw")
     monkeypatch.setattr(config, "ADMIN_EMAILS", frozenset({"boss@example.com"}))
     monkeypatch.setattr(config, "ADMIN_UIDS", frozenset())
 
     c = TestClient(main.app)
-    assert c.post("/api/admin/auth/login", json={"password": "pw"}, headers=HEADERS).status_code == 200
+    _unlock_secret_portal(c, "portal-invite-123", "pw")
 
     # Enable Invite-Only + whitelist friend@example.com + maxUsers=2
     r_acc = c.put(
@@ -376,6 +420,7 @@ def test_branding_maintenance_and_feature_flags(isolated_data, monkeypatch):
 
 def test_ops_clear_cache_prune_sessions_and_hf_sync_includes_admin(isolated_data, monkeypatch):
     _reset_admin_limits()
+    monkeypatch.setattr(config, "ADMIN_PATH", "portal-ops-test-9")
     monkeypatch.setattr(config, "ADMIN_PASSWORD", "pw")
 
     # Create dummy cache files
@@ -390,7 +435,7 @@ def test_ops_clear_cache_prune_sessions_and_hf_sync_includes_admin(isolated_data
     os.utime(bad_dir, (old_ts, old_ts))
 
     c = TestClient(main.app)
-    assert c.post("/api/admin/auth/login", json={"password": "pw"}, headers=HEADERS).status_code == 200
+    _unlock_secret_portal(c, "portal-ops-test-9", "pw")
 
     # Update site_config so admin/site_config.json exists on disk
     c.put("/api/admin/config", json={"appName": "Huy Studio"}, headers=HEADERS)

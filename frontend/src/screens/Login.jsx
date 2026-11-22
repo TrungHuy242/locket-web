@@ -16,7 +16,7 @@ function Brand({ appName, tagline }) {
   );
 }
 
-export function Login({ onAuthenticated, onOpenAdmin }) {
+export function Login({ onAuthenticated }) {
   const site = useSiteConfig((s) => s);
   const [step, setStep] = useState('welcome');
   const [email, setEmail] = useState('');
@@ -68,16 +68,13 @@ export function Login({ onAuthenticated, onOpenAdmin }) {
           <div className="welcome-brand"><Brand appName={site.appName} tagline={site.tagline} /></div>
           <h1>Chào mừng đến với {site.appName}</h1>
           <p className="tagline sub">Đăng nhập bằng tài khoản Locket của bạn để xem khoảnh khắc của bạn bè và gửi ảnh.</p>
-          {site.inviteOnly ? (
+          {site.maintenance?.enabled ? (
+            <div className="auth-invite-pill"><Icon name="wrench" /> {site.maintenance.message}</div>
+          ) : site.inviteOnly ? (
             <div className="auth-invite-pill"><Icon name="lock" /> Chế độ riêng tư · Chỉ dành cho người được mời</div>
           ) : null}
           <button type="button" className="btn btn-gold" onClick={() => go('email')}>Đăng nhập</button>
           <p className="auth-note">{site.footerCredit}</p>
-          {site.adminConfigured && onOpenAdmin ? (
-            <button type="button" className="auth-admin-link" onClick={onOpenAdmin}>
-              <Icon name="shield" /> Quản trị chủ sở hữu
-            </button>
-          ) : null}
         </section>
 
         <section className={`auth-step ${position('email')}`}>

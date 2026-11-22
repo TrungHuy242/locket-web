@@ -583,7 +583,6 @@ class AdminStore:
         with self._lock:
             cfg = copy.deepcopy(self._site_config)
             cfg["inviteOnly"] = bool(self._access.get("inviteOnly", False))
-            cfg["adminConfigured"] = config.is_admin_configured()
             return cfg
 
     def is_maintenance(self) -> bool:

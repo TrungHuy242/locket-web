@@ -320,7 +320,10 @@ def get_session(request: Request, response: Response):
             return {"authenticated": False, "banned": True, "reason": ban.get("reason") or ""}
     if uid:
         admin_store.touch_user(uid, user_info=user, email=email)
-    return {"authenticated": True, "user": user, "isAdmin": is_adm}
+    out = {"authenticated": True, "user": user}
+    if is_adm:
+        out["isAdmin"] = True
+    return out
 
 
 @app.post("/api/auth/login")
@@ -357,7 +360,10 @@ def login(body: LoginBody, request: Request, response: Response):
     _set_cookie(response, request, sid)
     client_ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (request.client.host if request.client else "")
     admin_store.record_login(user, email=email_clean, ip=client_ip, invited=used_invite)
-    return {"authenticated": True, "user": user, "isAdmin": is_adm}
+    out = {"authenticated": True, "user": user}
+    if is_adm:
+        out["isAdmin"] = True
+    return out
 
 
 @app.post("/api/auth/logout")

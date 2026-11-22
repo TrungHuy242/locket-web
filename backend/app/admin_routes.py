@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -24,25 +25,27 @@ router = APIRouter()
 _FALLBACK_SECRET = secrets.token_bytes(32)
 _admin_attempts: dict[str, deque[float]] = defaultdict(deque)
 _admin_attempts_lock = threading.Lock()
+_gate_attempts: dict[str, deque[float]] = defaultdict(deque)
+_gate_attempts_lock = threading.Lock()
 
 
-def _signing_key() -> bytes:
-    seed = config.ADMIN_PASSWORD or config.BACKUP_KEY
+def _signing_key(purpose: str = "cookie") -> bytes:
+    seed = f"{config.ADMIN_PATH}:{config.ADMIN_PASSWORD}:{config.BACKUP_KEY}".strip(":")
     if seed:
-        return hashlib.sha256(f"locket-admin-cookie-v1:{seed}".encode("utf-8")).digest()
-    return _FALLBACK_SECRET
+        return hashlib.sha256(f"locket-admin-{purpose}-v1:{seed}".encode("utf-8")).digest()
+    return hashlib.sha256(purpose.encode("utf-8") + _FALLBACK_SECRET).digest()
 
 
-def _sign_admin_token(ttl_sec: int = config.ADMIN_COOKIE_MAX_AGE) -> str:
+def _sign_token(ttl_sec: int, *, purpose: str) -> str:
     exp = int(time.time()) + max(60, int(ttl_sec))
     nonce = secrets.token_urlsafe(12)
     payload = f"{exp}.{nonce}"
-    sig = hmac.new(_signing_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    sig = hmac.new(_signing_key(purpose), payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
 
-def _verify_admin_token(token: Optional[str]) -> bool:
-    if not token or not config.ADMIN_PASSWORD:
+def _verify_token(token: Optional[str], *, purpose: str) -> bool:
+    if not token:
         return False
     parts = token.split(".")
     if len(parts) != 3:
@@ -55,8 +58,46 @@ def _verify_admin_token(token: Optional[str]) -> bool:
     if exp < int(time.time()):
         return False
     payload = f"{exp_s}.{nonce}"
-    expected = hmac.new(_signing_key(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    expected = hmac.new(_signing_key(purpose), payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return hmac.compare_digest(sig, expected)
+
+
+def _sign_admin_token(ttl_sec: int = config.ADMIN_COOKIE_MAX_AGE) -> str:
+    return _sign_token(ttl_sec, purpose="cookie")
+
+
+def _verify_admin_token(token: Optional[str]) -> bool:
+    if not config.has_secret_admin_portal():
+        return False
+    return _verify_token(token, purpose="cookie")
+
+
+def _sign_gate_token(ttl_sec: int = config.ADMIN_GATE_MAX_AGE) -> str:
+    return _sign_token(ttl_sec, purpose="gate")
+
+
+def _verify_gate_token(token: Optional[str]) -> bool:
+    if not config.has_secret_admin_portal():
+        return False
+    return _verify_token(token, purpose="gate")
+
+
+def _throttle_gate(request: Request, limit: int = 10, window: int = 600) -> bool:
+    """Return False when caller exceeded secret-path probes (silent 404 to prevent discovery)."""
+    key = request.client.host if request.client else "?"
+    now = time.time()
+    with _gate_attempts_lock:
+        if len(_gate_attempts) > 1000:
+            stale = [k for k, q in _gate_attempts.items() if not q or now - q[-1] > window]
+            for k in stale:
+                _gate_attempts.pop(k, None)
+        bucket = _gate_attempts[key]
+        while bucket and now - bucket[0] > window:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            return False
+        bucket.append(now)
+    return True
 
 
 def _throttle_admin_login(request: Request, limit: int = 6, window: int = 300) -> None:
@@ -71,7 +112,7 @@ def _throttle_admin_login(request: Request, limit: int = 6, window: int = 300) -
         while bucket and now - bucket[0] > window:
             bucket.popleft()
         if len(bucket) >= limit:
-            raise HTTPException(status_code=429, detail="Thử mật khẩu quản trị quá nhiều lần. Vui lòng đợi vài phút.")
+            raise HTTPException(status_code=429, detail="Thử mật khẩu quá nhiều lần. Vui lòng đợi vài phút.")
         bucket.append(now)
 
 
@@ -97,9 +138,10 @@ def is_request_admin(request: Request) -> tuple[bool, str]:
 
 
 def require_admin(request: Request) -> str:
+    """Stealth guard: unauthorized callers receive 404 Not Found so /api/admin/* is undiscoverable."""
     ok, actor = is_request_admin(request)
     if not ok:
-        raise HTTPException(status_code=403, detail="Bạn không có quyền truy cập trang quản trị.")
+        raise HTTPException(status_code=404, detail="Không tìm thấy.")
     return actor
 
 
@@ -110,6 +152,31 @@ def get_public_site_config():
     return admin_store.get_public_site_config()
 
 
+# ------------------------------------------------------------------ stealth secret portal door
+@router.get("/p/{secret_path}")
+def secret_admin_portal(secret_path: str, request: Request):
+    """Hidden emergency portal door. Only active when BOTH LOCKET_ADMIN_PATH (>=8 chars) and
+    LOCKET_ADMIN_PASSWORD are set. Any wrong slug or disabled state returns an indistinguishable 404."""
+    if not _throttle_gate(request):
+        raise HTTPException(status_code=404, detail="Không tìm thấy.")
+    if not config.has_secret_admin_portal():
+        raise HTTPException(status_code=404, detail="Không tìm thấy.")
+    if not hmac.compare_digest(secret_path.strip(), config.ADMIN_PATH):
+        raise HTTPException(status_code=404, detail="Không tìm thấy.")
+    resp = RedirectResponse(url="/?_gate=1", status_code=302)
+    resp.headers["Cache-Control"] = "no-store"
+    resp.set_cookie(
+        config.ADMIN_GATE_COOKIE,
+        _sign_gate_token(),
+        max_age=config.ADMIN_GATE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=config.COOKIE_SECURE or request.url.scheme == "https",
+        path="/",
+    )
+    return resp
+
+
 # ------------------------------------------------------------------ admin auth
 class AdminLoginBody(BaseModel):
     password: str = Field(min_length=1, max_length=256)
@@ -118,25 +185,25 @@ class AdminLoginBody(BaseModel):
 @router.get("/api/admin/auth/status")
 def admin_auth_status(request: Request):
     ok, via = is_request_admin(request)
+    has_gate = _verify_gate_token(request.cookies.get(config.ADMIN_GATE_COOKIE))
+    if not ok and not has_gate:
+        raise HTTPException(status_code=404, detail="Không tìm thấy.")
     return {
         "isAdmin": ok,
         "via": via if ok else None,
-        "configured": config.is_admin_configured(),
-        "passwordEnabled": bool(config.ADMIN_PASSWORD),
-        "locketAdminEnabled": bool(config.ADMIN_EMAILS or config.ADMIN_UIDS),
+        "passwordEnabled": bool(has_gate and config.has_secret_admin_portal()),
     }
 
 
 @router.post("/api/admin/auth/login")
 def admin_login(body: AdminLoginBody, request: Request, response: Response):
+    if not config.has_secret_admin_portal():
+        raise HTTPException(status_code=404, detail="Không tìm thấy.")
+    if not _verify_gate_token(request.cookies.get(config.ADMIN_GATE_COOKIE)):
+        raise HTTPException(status_code=404, detail="Không tìm thấy.")
     _throttle_admin_login(request)
-    if not config.ADMIN_PASSWORD:
-        raise HTTPException(
-            status_code=503,
-            detail="Chưa cấu hình mật khẩu quản trị (LOCKET_ADMIN_PASSWORD) trên máy chủ.",
-        )
     if not hmac.compare_digest(body.password.strip(), config.ADMIN_PASSWORD):
-        raise HTTPException(status_code=401, detail="Mật khẩu quản trị không đúng.")
+        raise HTTPException(status_code=401, detail="Mật khẩu không đúng.")
     token = _sign_admin_token()
     response.set_cookie(
         config.ADMIN_COOKIE_NAME,
@@ -147,6 +214,7 @@ def admin_login(body: AdminLoginBody, request: Request, response: Response):
         secure=config.COOKIE_SECURE or request.url.scheme == "https",
         path="/",
     )
+    response.delete_cookie(config.ADMIN_GATE_COOKIE, path="/")
     admin_store.append_audit("password", "admin.login", detail=f"ip={request.client.host if request.client else '?'}")
     return {"ok": True, "isAdmin": True, "via": "password"}
 
@@ -154,6 +222,7 @@ def admin_login(body: AdminLoginBody, request: Request, response: Response):
 @router.post("/api/admin/auth/logout")
 def admin_logout(request: Request, response: Response):
     response.delete_cookie(config.ADMIN_COOKIE_NAME, path="/")
+    response.delete_cookie(config.ADMIN_GATE_COOKIE, path="/")
     return {"ok": True}
 
 

@@ -54,7 +54,7 @@ function AdminGate({ status, onUnlocked, onClose }) {
           <label className="field">
             <input
               type="password"
-              placeholder="Mật khẩu quản trị…"
+              placeholder="Mật khẩu…"
               autoComplete="current-password"
               value={password}
               onChange={(e) => { setPassword(e.target.value); setError(''); }}
@@ -65,17 +65,6 @@ function AdminGate({ status, onUnlocked, onClose }) {
             Mở bảng điều khiển
           </Button>
         </form>
-
-        {status && !status.configured ? (
-          <div className="admin-gate-note">
-            <b>Chưa thiết lập quyền Admin trên máy chủ:</b><br />
-            Hãy thêm biến môi trường <code>LOCKET_ADMIN_EMAILS</code> (email Locket của bạn) và <code>LOCKET_ADMIN_PASSWORD</code> trong Render Dashboard rồi khởi động lại.
-          </div>
-        ) : status && !status.passwordEnabled ? (
-          <div className="admin-gate-note">
-            Máy chủ chưa đặt <code>LOCKET_ADMIN_PASSWORD</code>. Bạn có thể đăng nhập bằng tài khoản Locket chủ sở hữu hoặc thêm biến này trên Render.
-          </div>
-        ) : null}
 
         {onClose ? (
           <button type="button" className="link" style={{ marginTop: 12 }} onClick={onClose}>
@@ -100,7 +89,7 @@ export function Admin({ view, standalone = false, onClose }) {
       const data = await api.admin.overview();
       setOverview(data);
     } catch (err) {
-      if (err.status === 403) setAuth((a) => (a ? { ...a, isAdmin: false } : a));
+      if (err.status === 403 || err.status === 404) setAuth((a) => (a ? { ...a, isAdmin: false } : a));
       else ui.error(err.message);
     } finally {
       setLoadingOv(false);
@@ -112,11 +101,11 @@ export function Admin({ view, standalone = false, onClose }) {
       const st = await api.admin.authStatus();
       setAuth(st);
       if (st.isAdmin) loadOverview();
-    } catch (err) {
-      ui.error(err.message);
-      setAuth({ isAdmin: false, configured: false, passwordEnabled: false });
+    } catch {
+      if (standalone) onClose?.();
+      else if (view?.id) nav.pop(view.id);
     }
-  }, [loadOverview]);
+  }, [loadOverview, standalone, onClose, view]);
 
   useEffect(() => { checkAuth(); }, [checkAuth]);
 

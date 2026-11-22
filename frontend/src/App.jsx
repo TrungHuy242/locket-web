@@ -76,7 +76,7 @@ function AnnouncementBanner() {
   );
 }
 
-function MaintenanceScreen({ onRetry, onOpenAdmin }) {
+function MaintenanceScreen({ onRetry }) {
   const appName = useSiteConfig((s) => s.appName);
   const message = useSiteConfig((s) => s.maintenance.message);
   return (
@@ -86,7 +86,6 @@ function MaintenanceScreen({ onRetry, onOpenAdmin }) {
         <h1>{appName} đang bảo trì</h1>
         <p>{message}</p>
         <button type="button" className="btn btn-primary" onClick={onRetry}>Kiểm tra lại</button>
-        <button type="button" className="link" onClick={onOpenAdmin}>Chủ sở hữu? Mở trang Quản trị</button>
       </div>
     </div>
   );
@@ -131,32 +130,25 @@ function Shell({ onSignOut }) {
 // Sections a home-screen shortcut (manifest "shortcuts") may open: /?open=chat etc.
 const SHORTCUTS = { chat: 'chat', notifications: 'notifications', memories: 'memories', friends: 'friends' };
 
-const isAdminHash = () => typeof window !== 'undefined' && window.location.hash.toLowerCase() === '#admin';
-
 export function App() {
   const [phase, setPhase] = useState('boot');   // boot | login | app | offline
   const [retrying, setRetrying] = useState(false);
-  const [hashAdmin, setHashAdmin] = useState(isAdminHash);
+  const [portalOpen, setPortalOpen] = useState(false);
   const isAdmin = useApp((s) => s.isAdmin);
   const maintenanceOn = useSiteConfig((s) => s.maintenance.enabled);
 
-  const openHashAdmin = useCallback(() => {
-    if (window.location.hash.toLowerCase() !== '#admin') window.location.hash = 'admin';
-    setHashAdmin(true);
-  }, []);
-
-  const closeHashAdmin = useCallback(() => {
-    if (window.location.hash.toLowerCase() === '#admin') {
-      window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
-    }
-    setHashAdmin(false);
+  const closePortal = useCallback(() => {
+    setPortalOpen(false);
     loadSiteConfig();
   }, []);
 
+  // Only open the standalone portal if the server redirected here from the owner's hidden path
+  // AND confirms a valid server-issued HttpOnly gate cookie (outsiders probing /?_gate=1 get 404).
   useEffect(() => {
-    const onHash = () => setHashAdmin(isAdminHash());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('_gate') !== '1') return;
+    window.history.replaceState(window.history.state, '', window.location.pathname);
+    api.admin.authStatus().then(() => setPortalOpen(true)).catch(() => {});
   }, []);
 
   const signOut = useCallback(() => {
@@ -236,25 +228,25 @@ export function App() {
     checkSession();
   }, [signOut, checkSession]);
 
-  const showMaintenance = maintenanceOn && !isAdmin && !hashAdmin && phase !== 'boot' && phase !== 'offline';
+  const showMaintenance = maintenanceOn && phase === 'app' && !isAdmin && !portalOpen;
 
   return (
     <div className="shell">
       {phase === 'offline' ? <OfflineScreen onRetry={retry} busy={retrying} /> : null}
       {showMaintenance ? (
-        <MaintenanceScreen onRetry={retry} onOpenAdmin={openHashAdmin} />
+        <MaintenanceScreen onRetry={retry} />
       ) : phase === 'app' ? <Shell onSignOut={signOut} /> : phase === 'offline' ? null : (
         <div className="screen">
           <main id="app">
-            {phase === 'login' ? <Login onAuthenticated={start} onOpenAdmin={openHashAdmin} /> : null}
+            {phase === 'login' ? <Login onAuthenticated={start} /> : null}
           </main>
         </div>
       )}
-      {!hashAdmin && !showMaintenance && phase !== 'offline' ? <AnnouncementBanner /> : null}
-      {hashAdmin ? (
-        <ErrorBoundary inline title="Không mở được trang Quản trị" onClose={closeHashAdmin}>
+      {!portalOpen && !showMaintenance && phase !== 'offline' ? <AnnouncementBanner /> : null}
+      {portalOpen ? (
+        <ErrorBoundary inline title="Không mở được trang Quản trị" onClose={closePortal}>
           <Suspense fallback={<div className="admin-standalone"><div className="empty" style={{ marginTop: 80 }}><span className="spinner lg" /></div></div>}>
-            <Admin standalone onClose={closeHashAdmin} />
+            <Admin standalone onClose={closePortal} />
           </Suspense>
         </ErrorBoundary>
       ) : null}
