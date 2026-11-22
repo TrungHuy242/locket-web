@@ -80,7 +80,7 @@ export function App() {
   }, []);
 
   const start = useCallback((session) => {
-    resetApp();
+    resetApp({ clearCache: false });
     appStore.set({ user: session.user });
     setPhase('app');
     (window.requestIdleCallback || ((fn) => setTimeout(fn, 1500)))(prefetchPages);

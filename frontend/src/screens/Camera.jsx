@@ -20,6 +20,7 @@ import {
 } from '../lib/cameraMedia.js';
 import { PhotoboothEditor, loadStyle, saveStyle } from './Photobooth.jsx';
 import { StylePicker } from './camera/StylePicker.jsx';
+import { CropSheet } from './camera/CropSheet.jsx';
 import { BoothOverlays, CaptionEditor, FilterTray, PreviewLayers, RecipientsBar } from './camera/CameraOverlays.jsx';
 
 export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHistory }) {
@@ -63,6 +64,16 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   const [filterAmount, setFilterAmount] = useState(() => Number(localStorage.getItem('locket.filterAmount')) || 1);
   const [trayOpen, setTrayOpen] = useState(false);
   const [thumbs, setThumbs] = useState({});
+  // photo preview filter editing & self-timer & drag-drop
+  const [previewTrayOpen, setPreviewTrayOpen] = useState(false);
+  const [previewFilterId, setPreviewFilterId] = useState('none');
+  const [previewFilterAmount, setPreviewFilterAmount] = useState(1);
+  const [previewThumbs, setPreviewThumbs] = useState({});
+  const previewThumbGen = useRef(0);
+  const [timerSec, setTimerSec] = useState(0); // 0 | 3 | 5 | 10
+  const [timerCount, setTimerCount] = useState(0);
+  const timerRef = useRef({ running: false, cancel: false });
+  const [draggingFile, setDraggingFile] = useState(false);
   const filterRef = useRef({ id: filterId, amount: filterAmount });
   filterRef.current = { id: filterId, amount: filterAmount };
   const glActive = glOk && !glLost && filterId !== 'none';
@@ -194,10 +205,16 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     setPreset(null);
     setSelected(new Set());
     setSending('idle');
+    setPreviewTrayOpen(false);
+    setPreviewFilterId(media.initialFilterId || 'none');
+    setPreviewFilterAmount(media.initialFilterAmount ?? 1);
+    setPreviewThumbs({});
     stop();
   }, [stop]);
 
   const exitPreview = useCallback(() => {
+    previewThumbGen.current += 1;
+    setPreviewTrayOpen(false);
     setPreview((p) => {
       if (p) { if (p.imageUrl) URL.revokeObjectURL(p.imageUrl); if (p.videoUrl) URL.revokeObjectURL(p.videoUrl); }
       return null;
@@ -206,10 +223,58 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   }, []);
 
   useEffect(() => { onPreviewChange(!!preview); }, [preview, onPreviewChange]);
+  const prevPreviewIdRef = useRef(null);
   useEffect(() => {
-    if (preview && captionRef.current) captionRef.current.textContent = '';
+    const rawKey = preview ? (preview.rawCanvas || preview.videoUrl || preview.imageUrl) : null;
+    if (rawKey && rawKey !== prevPreviewIdRef.current && captionRef.current) captionRef.current.textContent = '';
+    prevPreviewIdRef.current = rawKey;
     if (preview?.videoUrl) shotVideoRef.current?.play().catch(() => {});
   }, [preview]);
+
+  // Re-render photo preview when user changes filter or strength in preview mode
+  const applyPreviewFilter = useCallback(async (nextId, nextAmount) => {
+    const cur = previewRef.current;
+    if (!cur?.rawCanvas) return;
+    const raw = cur.rawCanvas;
+    let canvas;
+    if (glOk && nextId !== 'none') {
+      canvas = filteredCanvas(raw, { filter: nextId, amount: nextAmount, width: PHOTO_SIZE, height: PHOTO_SIZE });
+    } else {
+      canvas = raw;
+    }
+    const blob = await toBlob(canvas);
+    if (!blob || previewRef.current?.rawCanvas !== raw) return;
+    const url = URL.createObjectURL(blob);
+    setPreview((p) => {
+      if (!p || p.rawCanvas !== raw) { URL.revokeObjectURL(url); return p; }
+      if (p.imageUrl) URL.revokeObjectURL(p.imageUrl);
+      return { ...p, image: blob, imageUrl: url };
+    });
+  }, [glOk]);
+
+  const togglePreviewTray = () => {
+    if (!glOk) { ui.warning('Trình duyệt này không hỗ trợ WebGL nên chưa dùng được bộ lọc'); return; }
+    const willOpen = !previewTrayOpen;
+    setPreviewTrayOpen(willOpen);
+    const gen = ++previewThumbGen.current;
+    if (!willOpen || Object.keys(previewThumbs).length || !preview?.rawCanvas) return;
+    const snap = document.createElement('canvas');
+    snap.width = snap.height = 84;
+    snap.getContext('2d').drawImage(preview.rawCanvas, 0, 0, 84, 84);
+    let i = 0;
+    const step = () => {
+      if (previewThumbGen.current !== gen) return;
+      const batch = {};
+      const end = Math.min(i + 4, FILTERS.length);
+      for (; i < end; i += 1) {
+        const f = FILTERS[i];
+        try { batch[f.id] = filteredCanvas(snap, { filter: f.id, amount: 1, width: 84, height: 84 }).toDataURL('image/jpeg', 0.7); } catch { /* skip */ }
+      }
+      setPreviewThumbs((prev) => ({ ...prev, ...batch }));
+      if (i < FILTERS.length) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  };
 
   /* ------------------------------------------------ live filter preview */
   useEffect(() => { try { localStorage.setItem('locket.filter', filterId); localStorage.setItem('locket.filterAmount', String(filterAmount)); } catch { /* ignore */ } }, [filterId, filterAmount]);
@@ -387,7 +452,9 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     const video = videoRef.current;
     if (!c.stream || !video?.videoWidth) { ui.warning('Camera chưa sẵn sàng'); return; }
     let undoFlash = () => {};
+    let rawCanvas;
     let canvas;
+    const look = filterRef.current;
     try {
       if (flashOn) {
         if (c.caps.torch && c.track) {
@@ -404,14 +471,13 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
           await wait(280);
         }
       }
-      const look = filterRef.current;
+      rawCanvas = document.createElement('canvas');
+      rawCanvas.width = rawCanvas.height = PHOTO_SIZE;
+      drawSquare(rawCanvas.getContext('2d'), video, video.videoWidth, video.videoHeight, PHOTO_SIZE, { mirror: shouldMirror(), zoomBy: digitalZoom() });
       if (glOk && look.id !== 'none') {
-        canvas = filteredCanvas(video, { filter: look.id, amount: look.amount, width: PHOTO_SIZE, height: PHOTO_SIZE,
-          crop: centerCrop(video.videoWidth, video.videoHeight, 1, digitalZoom()), mirror: shouldMirror() });
+        canvas = filteredCanvas(rawCanvas, { filter: look.id, amount: look.amount, width: PHOTO_SIZE, height: PHOTO_SIZE });
       } else {
-        canvas = document.createElement('canvas');
-        canvas.width = canvas.height = PHOTO_SIZE;
-        drawSquare(canvas.getContext('2d'), video, video.videoWidth, video.videoHeight, PHOTO_SIZE, { mirror: shouldMirror(), zoomBy: digitalZoom() });
+        canvas = rawCanvas;
       }
     } finally {
       undoFlash();
@@ -422,8 +488,36 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     fl.classList.add('blink');
     vibrate(12);
     const image = await toBlob(canvas);
-    if (image) enterPreview({ image });
+    if (image) enterPreview({ image, rawCanvas, initialFilterId: look.id, initialFilterAmount: look.amount });
   }, [enterPreview, flashOn, glOk]);
+
+  const cancelTimer = useCallback(() => {
+    timerRef.current.cancel = true;
+    setTimerCount(0);
+  }, []);
+
+  const triggerPhoto = useCallback(async () => {
+    if (!timerSec) { takePhoto(); return; }
+    const t = timerRef.current;
+    if (t.running) { cancelTimer(); return; }
+    t.running = true;
+    t.cancel = false;
+    setTrayOpen(false);
+    try {
+      for (let n = timerSec; n > 0; n -= 1) {
+        setTimerCount(n);
+        vibrate(6);
+        await wait(1000);
+        if (t.cancel || !activeRef.current || previewRef.current) return;
+      }
+      setTimerCount(0);
+      await takePhoto();
+    } finally {
+      t.running = false;
+      setTimerCount(0);
+    }
+  }, [timerSec, takePhoto, cancelTimer]);
+  useEffect(() => () => { timerRef.current.cancel = true; }, []);
 
   /* ------------------------------------------------ video */
   const rec = useRef({ recorder: null, done: null, pressing: false, preparing: false, holdTimer: 0 });
@@ -537,7 +631,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     if (r.holdTimer) {
       clearTimeout(r.holdTimer);
       r.holdTimer = 0;
-      if (!cancelled) takePhoto();
+      if (!cancelled) triggerPhoto();
     } else if (!r.preparing) {
       stopRecording();
     }
@@ -549,11 +643,11 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
       if (e.key !== ' ' || e.repeat || !activeRef.current || previewRef.current) return;
       if (e.target.closest?.('input, textarea, [contenteditable], button') || document.getElementById('layers').children.length) return;
       e.preventDefault();
-      if (modeRef.current === 'booth') { if (!boothRef.current.running) runBoothRef.current(); } else takePhoto();
+      if (modeRef.current === 'booth') { if (!boothRef.current.running) runBoothRef.current(); } else triggerPhoto();
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [takePhoto]);
+  }, [triggerPhoto]);
 
   // double tap on the viewfinder flips the camera
   const lastTap = useRef(0);
@@ -563,8 +657,8 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     if (now - lastTap.current < 300) { lastTap.current = 0; flip(); } else lastTap.current = now;
   };
 
-  /* ------------------------------------------------ gallery */
-  const onVideoFile = async (file) => {
+  /* ------------------------------------------------ gallery, crop, paste & drop */
+  const onVideoFile = useCallback(async (file) => {
     if (file.size > MAX_FILE_BYTES) { ui.warning('Video quá lớn (tối đa 200 MB)'); return; }
     setLoadingFile(true);
     try {
@@ -579,30 +673,52 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     } finally {
       setLoadingFile(false);
     }
-  };
+  }, [enterPreview]);
 
-  const onFile = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
+  const openPickedFile = useCallback(async (file) => {
     if (!file) return;
     if (file.type.startsWith('video/') || /\.(mov|mp4|m4v|webm|3gp)$/i.test(file.name)) { onVideoFile(file); return; }
     try {
       const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
-      const look = filterRef.current;
-      let canvas;
-      if (glOk && look.id !== 'none') canvas = filteredCanvas(bitmap, { filter: look.id, amount: look.amount, width: PHOTO_SIZE, height: PHOTO_SIZE });
-      else {
-        canvas = document.createElement('canvas');
-        canvas.width = canvas.height = PHOTO_SIZE;
-        drawSquare(canvas.getContext('2d'), bitmap, bitmap.width, bitmap.height, PHOTO_SIZE);
-      }
-      bitmap.close?.();
-      const image = await toBlob(canvas);
-      if (image) enterPreview({ image });
+      const ctl = ui.sheet(() => (
+        <CropSheet
+          bitmap={bitmap}
+          onCancel={() => { bitmap.close?.(); ctl.close(); }}
+          onConfirm={async (rawCanvas) => {
+            bitmap.close?.();
+            ctl.close();
+            const look = filterRef.current;
+            const out = glOk && look.id !== 'none'
+              ? filteredCanvas(rawCanvas, { filter: look.id, amount: look.amount, width: PHOTO_SIZE, height: PHOTO_SIZE })
+              : rawCanvas;
+            const image = await toBlob(out);
+            if (image) enterPreview({ image, rawCanvas, initialFilterId: look.id, initialFilterAmount: look.amount });
+          }}
+        />
+      ), { full: true, onClose: () => bitmap.close?.() });
     } catch {
       ui.warning(/hei[cf]/i.test(file.type + file.name) ? 'Trình duyệt này không đọc được ảnh HEIC. Hãy chọn ảnh JPEG/PNG hoặc mở trang bằng Safari.' : 'Không đọc được ảnh này');
     }
+  }, [enterPreview, glOk, onVideoFile]);
+
+  const onFile = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) openPickedFile(file);
   };
+
+  // desktop: Ctrl+V paste an image from clipboard directly into the camera
+  useEffect(() => {
+    const onPaste = (e) => {
+      if (!activeRef.current || previewRef.current || editorRef.current) return;
+      if (e.target.closest?.('input, textarea, [contenteditable]')) return;
+      const item = [...(e.clipboardData?.items || [])].find((it) => it.type.startsWith('image/'));
+      const file = item?.getAsFile();
+      if (file) { e.preventDefault(); openPickedFile(file); }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [openPickedFile]);
 
   /* ------------------------------------------------ send */
   const toggleRecipient = (uid) => {
@@ -627,12 +743,14 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     setSending('sending');
     let caption = (captionRef.current?.textContent || '').trim();
     if (!caption && preset?.type === 'time') caption = clock(Date.now());
+    else if (!caption && preset?.text && ['music', 'review', 'location', 'weather'].includes(preset.type)) caption = preset.text;
     try {
       let image = preview.image;
       if (preview.library && trimStart > 0 && clipRef.current && preview.decodable) image = await stillAt(clipRef.current.v, trimStart);
       const moment = await api.postMoment({
         image, video: preview.video,
         videoStart: preview.library ? trimStart : 0, videoLength: preview.library ? CLIP_S : 0, caption, preset: preset?.key,
+        overlayMeta: preset?.overlayMeta,
         isPrivate: selected.has(SELF), recipients: [...selected].filter((uid) => uid !== SELF),
         videoMirror: !!preview.mirrorVideo,
         // the upload itself is measurable; after it the server converts / stores the file (not measurable)
@@ -672,7 +790,17 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   };
 
   const openStyles = () => {
-    const ctl = ui.sheet(() => <StylePicker onPick={(p) => { setPreset(p); ctl.close(); }} />, { full: true });
+    const ctl = ui.sheet(() => (
+      <StylePicker current={preset} onPick={(p) => {
+        setPreset(p);
+        if (captionRef.current) {
+          if (p && ['music', 'review', 'location', 'weather'].includes(p.type)) {
+            captionRef.current.textContent = p.text || '';
+          }
+        }
+        ctl.close();
+      }} />
+    ), { full: true });
   };
 
   const onCaptionInput = (e) => {
@@ -696,11 +824,21 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
       <div className="cam-title" data-when="preview">Gửi đến...
         <button type="button" className="icon-btn pressable" aria-label="Lưu vào máy" onClick={() => { saveToDevice(); ui.success('Đã lưu vào máy'); }}><Icon name="download" /></button>
       </div>
-      <div ref={vfRef} className={`viewfinder ${mirrored ? 'mirror' : ''} ${switching ? 'switching' : ''}`} style={{ '--zoom': zoomScale }} onPointerUp={onViewfinderUp}>
+      <div ref={vfRef} className={`viewfinder ${mirrored ? 'mirror' : ''} ${switching ? 'switching' : ''} ${draggingFile ? 'dropping' : ''}`}
+        style={{ '--zoom': zoomScale }} onPointerUp={onViewfinderUp}
+        onDragOver={(e) => { if (!preview && e.dataTransfer?.types?.includes('Files')) { e.preventDefault(); setDraggingFile(true); } }}
+        onDragLeave={() => setDraggingFile(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDraggingFile(false);
+          if (preview) return;
+          const file = e.dataTransfer?.files?.[0];
+          if (file) openPickedFile(file);
+        }}>
         <video ref={videoRef} className="live" playsInline muted autoPlay />
         <canvas ref={glRef} className="live live-gl" hidden={!glActive || !!preview} aria-hidden="true" />
-        <BoothOverlays mode={mode} preview={preview} run={run} booth={booth} boothRatio={boothRatio} boothAspect={boothStyle.aspect}
-          onCancel={cancelBooth}
+        <BoothOverlays mode={mode} preview={preview} run={run} timerCount={timerCount} booth={booth} boothRatio={boothRatio} boothAspect={boothStyle.aspect}
+          onCancel={cancelBooth} onCancelTimer={cancelTimer}
           onToggleShots={() => setBoothOpt({ shots: booth.shots === 4 ? 3 : 4 })}
           onCycleCountdown={() => setBoothOpt({ countdown: booth.countdown === 3 ? 5 : booth.countdown === 5 ? 10 : 3 })}
           onCycleAspect={() => {
@@ -709,10 +847,22 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
             setBoothStyle(next);
             saveStyle(next);
           }} />
-        <FilterTray open={trayOpen} preview={preview} filterId={filterId} filterAmount={filterAmount} thumbs={thumbs}
-          onPick={setFilterId} onAmount={setFilterAmount} />
+        <FilterTray open={preview ? previewTrayOpen : trayOpen} preview={preview} previewPhoto={!!(preview && preview.rawCanvas && !preview.video)}
+          filterId={preview ? previewFilterId : filterId} filterAmount={preview ? previewFilterAmount : filterAmount}
+          thumbs={preview ? previewThumbs : thumbs}
+          onPick={(id) => {
+            if (preview) { setPreviewFilterId(id); applyPreviewFilter(id, previewFilterAmount); }
+            else setFilterId(id);
+          }}
+          onAmount={(a) => {
+            if (preview) { setPreviewFilterAmount(a); applyPreviewFilter(previewFilterId, a); }
+            else setFilterAmount(a);
+          }} />
         <PreviewLayers preview={preview} shotVideoRef={shotVideoRef} soundOn={soundOn} trimStart={trimStart}
+          previewTrayOpen={previewTrayOpen} canFilterPreview={!!(glOk && preview?.rawCanvas && !preview?.video)}
+          onTogglePreviewTray={togglePreviewTray}
           onShotTime={onShotTime} onToggleSound={toggleSound} onTrim={onTrim} />
+        {draggingFile ? <div className="vf-msg drop-hint"><b>Thả ảnh hoặc video vào đây</b><span>Hỗ trợ căn khung vuông & bộ lọc</span></div> : null}
         {loadingFile ? <div className="vf-msg"><span className="spinner" /><span>Đang đọc video…</span></div> : null}
         {message && !preview ? (
           <div className="vf-msg">
@@ -725,6 +875,12 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
         <button type="button" className={`vf-btn fx ${trayOpen || filterId !== 'none' ? 'on' : ''}`} data-when="capture" aria-label="Bộ lọc" aria-pressed={trayOpen} onClick={openTray}>
           <Icon name="filters" />
         </button>
+        {mode === 'photo' ? (
+          <button type="button" className={`vf-btn timer ${timerSec ? 'on' : ''}`} data-when="capture" aria-label="Hẹn giờ chụp" title="Hẹn giờ chụp"
+            onClick={() => setTimerSec((s) => (s === 0 ? 3 : s === 3 ? 5 : s === 5 ? 10 : 0))}>
+            {timerSec ? `${timerSec}s` : <Icon name="timer" />}
+          </button>
+        ) : null}
         <button type="button" className={`vf-btn flash ${flashOn ? 'on' : ''} ${trayOpen ? 'tucked' : ''}`} data-when="capture" aria-label="Đèn flash" onClick={() => setFlashOn((v) => !v)}>
           <Icon name={flashOn ? 'bolt' : 'boltOff'} />
         </button>
@@ -742,7 +898,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
           aria-label={mode === 'booth' ? `Chụp photobooth ${booth.shots} ảnh` : 'Chạm để chụp, giữ để quay video'}
           onPointerDown={onShutterDown} onPointerUp={() => release(false)} onPointerCancel={() => release(true)}
           onContextMenu={(e) => e.preventDefault()}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (mode === 'booth') runBooth(); else takePhoto(); } }}>
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (mode === 'booth') runBooth(); else triggerPhoto(); } }}>
           <svg className="ring" viewBox="0 0 88 88"><circle ref={ringRef} cx="44" cy="44" r="42" strokeDasharray={RING} strokeDashoffset={RING} /></svg>
         </button>
         <button type="button" key={spin} className={`cam-side flip ${spin ? 'spin' : ''}`} aria-label="Đổi camera" onClick={flip}><Icon name="flip" /></button>
@@ -770,7 +926,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
         </span>
         <Icon name="chevDown" />
       </button>
-      <RecipientsBar user={user} friends={friends} selected={selected} onToggle={toggleRecipient} />
+      <RecipientsBar user={user} friends={friends} selected={selected} onToggle={toggleRecipient} onApplyGroup={(uids) => setSelected(new Set(uids))} />
       <input ref={fileRef} type="file" accept="image/*,video/*" hidden onChange={onFile} />
       {editor && boothShots ? (
         <ErrorBoundary inline title="Không mở được trình chỉnh sửa Photobooth" onClose={() => setEditor(false)}>

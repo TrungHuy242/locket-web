@@ -164,3 +164,16 @@
 .chat-moment-date { margin-top: 4px; color: var(--faint); font-size: 13px; font-weight: 700; }
 .moment-picker .fp-grid { margin-top: 6px; }
 .page-loading { flex: 1; display: grid; place-items: center; padding-top: 30vh; }
+
+
+/* ---------- upgrades: chat search/filters, composer emoji, navbar action group ---------- */
+.nav-actions { display: flex; align-items: center; gap: 6px; }
+.icon-btn.sm { width: 36px; height: 36px; }
+.icon-btn.on { color: var(--gold); background: rgba(255, 198, 41, .16); }
+.chat-tools { position: sticky; top: 0; z-index: 2; padding: 2px 0 8px; background: var(--bg); }
+.chat-tools .search .x { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; color: var(--icon-2); }
+.chat-filters { display: flex; gap: 8px; margin-top: 8px; }
+.chat-filters .chip { min-height: 30px; padding: 4px 12px; font-size: 13px; color: var(--label-2); }
+.chat-filters .chip.on { background: var(--chip-on); color: var(--chip-on-text); }
+.chat-filters .chip .cnt { font-size: 12px; opacity: .7; }
+.composer .emoji-btn { margin-left: 0; }

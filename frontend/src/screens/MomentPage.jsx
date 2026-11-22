@@ -62,15 +62,32 @@ export function MomentVideo({ src, poster, onState }) {
   );
 }
 
-export const MomentPage = memo(function MomentPage({ moment: m, active, playingMusic, onMusic, onComments }) {
+export const MomentPage = memo(function MomentPage({ moment: m, active, playingMusic, onMusic, onComments, onQuickReact }) {
+  const tapRef = useRef(0);
+  const [heartPop, setHeartPop] = useState(0);
+
+  const onMediaClick = (e) => {
+    if (m.mine || m.video || !onQuickReact) return;
+    if (e.target.closest('button, a, video')) return;
+    const now = performance.now();
+    if (now - tapRef.current < 320) {
+      tapRef.current = 0;
+      setHeartPop((n) => n + 1);
+      onQuickReact('💛');
+    } else {
+      tapRef.current = now;
+    }
+  };
+
   return (
     <section className="page page-moment" data-id={m.id}>
-      <div className="moment-media">
+      <div className="moment-media" onClick={onMediaClick}>
         <img src={m.image} alt={m.caption || `Khoảnh khắc của ${m.user.name}`} loading={active ? 'eager' : 'lazy'} decoding="async" draggable="false" />
         {m.video && active ? <MomentVideo src={m.video} poster={m.image} /> : null}
         {m.video && !active ? <span className="vbadge"><Icon name="play" /><b>Video</b></span> : null}
         <CaptionPill overlay={m.overlay} playing={playingMusic} onPlay={(url) => onMusic(m.id, url)} />
         {!m.mine ? <MyReactions list={m.myReactions} /> : null}
+        {heartPop ? <span key={heartPop} className="dbl-heart" aria-hidden="true">💛</span> : null}
       </div>
       <div className="moment-meta">
         <Avatar user={m.user} />

@@ -3,12 +3,14 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { Avatar } from '../components/Avatar.jsx';
 import { Icon } from '../lib/icons.jsx';
+import { ago } from '../lib/format.js';
 import { setSetting, useSettings } from '../lib/settings.js';
 import { appStore, useApp } from '../store.js';
 import { Navbar, nav } from '../ui/nav.jsx';
 import { ui } from '../ui/overlays.jsx';
 import { applyUpdate, checkForUpdate, isIOS, isIOSSafari, promptInstall, pwaStore } from '../lib/pwa.js';
 import { copyInvite, inviteLink, openFriends, shareInvite } from './Friends.jsx';
+import { openRecap } from './RecapModal.jsx';
 
 export async function editName() {
   const user = appStore.get().user;
@@ -91,6 +93,12 @@ export function Profile({ view }) {
         <button type="button" className="mem-entry" onClick={() => nav.push('memories')}>
           <span className="ic"><Icon name="heart" /></span>
           <span className="grow"><b>Kỷ niệm</b><small>Xem lại mọi khoảnh khắc theo ngày, tháng, năm</small></span>
+          <span className="chev"><Icon name="chevRight" /></span>
+        </button>
+
+        <button type="button" className="mem-entry recap-entry" onClick={openRecap}>
+          <span className="ic"><Icon name="chart" /></span>
+          <span className="grow"><b>Thống kê & Recap</b><small>Chuỗi ngày đăng, biểu đồ tháng và top bạn thân</small></span>
           <span className="chev"><Icon name="chevRight" /></span>
         </button>
 
@@ -212,6 +220,71 @@ function AppSection() {
   );
 }
 
+function fmtMB(bytes) {
+  if (!bytes) return '0 MB';
+  const mb = bytes / (1024 * 1024);
+  return mb < 0.1 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${mb.toFixed(1)} MB`;
+}
+
+function SyncSection() {
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => { api.syncStatus().then(setSt).catch(() => {}); };
+  useEffect(() => { load(); }, []);
+
+  const syncNow = async () => {
+    setBusy(true);
+    try {
+      const res = await api.syncNow();
+      setSt(res.status);
+      ui.success(res.synced ? 'Đã đồng bộ dữ liệu lên đám mây' : 'Dữ liệu đã ở bản mới nhất');
+    } catch (err) {
+      ui.error(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stateText = !st ? 'Đang kiểm tra…'
+    : st.enabled
+      ? `${st.encrypted ? 'Đang bật · Mã hóa AES' : 'Đang bật'}${st.syncedFiles ? ` · ${st.syncedFiles} tệp` : ''}`
+      : 'Chỉ lưu cục bộ (chưa cấu hình HF Dataset)';
+
+  const lastText = st?.lastSyncAt ? `Sao lưu ${ago(st.lastSyncAt)}`
+    : st?.lastRestoreAt ? `Khôi phục ${ago(st.lastRestoreAt)}`
+      : st?.enabled ? 'Chưa có thay đổi mới' : '';
+
+  return (
+    <>
+      <div className="section-label"><Icon name="cloud" /> Sao lưu & Bộ nhớ</div>
+      <div className="group">
+        <div className="cell">
+          <span className="ic"><Icon name="cloud" /></span>
+          <span className="grow">
+            Sao lưu đám mây
+            <span className="sub">{stateText}{lastText ? ` · ${lastText}` : ''}{st?.lastError ? ` · Lỗi: ${st.lastError}` : ''}</span>
+          </span>
+        </div>
+        {st?.enabled ? (
+          <button type="button" className="cell" onClick={syncNow} disabled={busy}>
+            <span className="ic"><Icon name="refresh" /></span>
+            <span className="grow">Đồng bộ ngay<span className="sub">{st.dirty ? 'Có thay đổi chờ sao lưu' : 'Đẩy bản chụp mới nhất lên HF Dataset'}</span></span>
+            {busy ? <span className="spinner" /> : <span className="chev"><Icon name="chevRight" /></span>}
+          </button>
+        ) : null}
+        {st ? (
+          <div className="cell">
+            <span className="ic"><Icon name="grid" /></span>
+            <span className="grow">Bộ nhớ đệm máy chủ<span className="sub">Ảnh thu nhỏ {fmtMB(st.thumbCacheBytes)} · Video {fmtMB(st.videoCacheBytes)}</span></span>
+            <span className="val">{fmtMB(st.cacheBytes)}</span>
+          </div>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
 export function Settings({ view, onSignOut }) {
   const user = useApp((s) => s.user);
 
@@ -223,6 +296,23 @@ export function Settings({ view, onSignOut }) {
       } catch {
         ui.warning('Trình duyệt chưa cho phép dùng micro');
         return;
+      }
+    }
+    if (key === 'browserAlerts' && value) {
+      if (typeof Notification === 'undefined') {
+        ui.warning('Trình duyệt này không hỗ trợ thông báo nền');
+        return;
+      }
+      if (Notification.permission === 'denied') {
+        ui.warning('Bạn đã chặn quyền thông báo trong cài đặt trình duyệt');
+        return;
+      }
+      if (Notification.permission !== 'granted') {
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') {
+          ui.warning('Chưa được cấp quyền thông báo');
+          return;
+        }
       }
     }
     setSetting(key, value);
@@ -261,7 +351,10 @@ export function Settings({ view, onSignOut }) {
         <div className="group">
           <Toggle k="ghostRead" title="Ẩn trạng thái đã xem" sub="Đọc tin nhắn mà không gửi thông báo đã xem" icon="eyeOff" onChange={change} />
           <Toggle k="notifications" title="Thông báo đẩy" sub="Đồng bộ tùy chọn thông báo với tài khoản Locket" icon="bell" onChange={change} />
+          <Toggle k="browserAlerts" title="Thông báo trên trình duyệt" sub="Báo tin nhắn & tương tác mới khi tab chạy nền" icon="bell" onChange={change} />
         </div>
+
+        <SyncSection />
 
         <AppSection />
 

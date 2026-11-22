@@ -38,10 +38,12 @@ class Provider:
     def post_moment(self, image: Optional[bytes], video: Optional[Union[bytes, Path]], caption: str,
                     preset: Optional[str], recipients: list, private: bool = False,
                     mirror_video: bool = False, video_start: float = 0.0,
-                    video_length: float = 0.0) -> dict: raise NotImplementedError
+                    video_length: float = 0.0, overlay_meta: Optional[dict] = None) -> dict: raise NotImplementedError
     def delete_moment(self, moment_id: str) -> None: raise NotImplementedError
     def memories(self, before=None, limit=60, kind="all", author=None, q="", year=None, month=None,
                  tz_minutes=0) -> dict: raise NotImplementedError
+    def stats(self, tz_minutes: int = 0) -> dict: raise NotImplementedError
+    def export_targets(self, moment_ids: list) -> list: raise NotImplementedError
     def react(self, moment_id: str, emoji: str) -> dict: raise NotImplementedError
     def mark_viewed(self, moment_id: str) -> None: raise NotImplementedError
     def activity(self, moment_id: str) -> dict: raise NotImplementedError

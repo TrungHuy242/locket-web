@@ -48,6 +48,16 @@ export const ICONS = {
   filters: svg('<circle cx="9" cy="9.500" r="5"/><circle cx="15" cy="9.500" r="5"/><circle cx="12" cy="14.500" r="5"/>', 22),
   sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2.500v2M12 19.500v2M4.600 4.600l1.400 1.400M18 18l1.400 1.400M2.500 12h2M19.500 12h2M4.600 19.400L6 18M18 6l1.400-1.400"/>', 20),
   warning: svg('<path d="M12 4 2.800 19.500h18.400z"/><path d="M12 10v4.200M12 17v.1"/>', 22),
+  music: svg('<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>', 18),
+  star: svg('<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.2 6.4 20.2l1.1-6.2L3 9.6l6.2-.9z"/>', 18),
+  pin: svg('<path d="M12 21s-6-5.3-6-10.5a6 6 0 1 1 12 0C18 15.7 12 21 12 21z"/><circle cx="12" cy="10.5" r="2.2"/>', 18),
+  cloud: svg('<path d="M6.5 19h11a4 4 0 0 0 .6-7.9A5.5 5.5 0 0 0 7.2 9.4 3.8 3.8 0 0 0 6.5 19z"/>', 18),
+  timer: svg('<circle cx="12" cy="13" r="7.5"/><path d="M12 9v4l2.5 2M9.5 2.5h5"/>', 20),
+  refresh: svg('<path d="M20 11a8 8 0 0 0-14.5-4.5L4 8.5M4 4v4.5h4.5M4 13a8 8 0 0 0 14.5 4.5l1.5-2M20 20v-4.5h-4.5"/>', 18),
+  chart: svg('<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>', 18),
+  rotate: svg('<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>', 20),
+  checkSquare: svg('<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="m8 12.2 2.8 2.8 5.2-5.5"/>', 19),
+  sparkles: svg('<path d="m10 3 1.8 5.2L17 10l-5.2 1.8L10 17l-1.8-5.2L3 10l5.2-1.8zM18 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/>', 18),
 };
 
 // SF Symbols that Locket captions reference by name. Unknown names render no icon rather than a guess.

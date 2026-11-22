@@ -2,7 +2,7 @@
 import { createStore } from './createStore.js';
 
 const KEY = 'locket.settings.v1';
-const DEFAULTS = { mirrorFront: true, saveAfterSend: false, ghostRead: false, notifications: true, recordAudio: false, theme: 'system' };
+const DEFAULTS = { mirrorFront: true, saveAfterSend: false, ghostRead: false, notifications: true, browserAlerts: false, recordAudio: false, theme: 'system' };
 
 let saved = {};
 try { saved = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch { /* storage unavailable */ }

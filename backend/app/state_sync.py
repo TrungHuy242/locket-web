@@ -75,6 +75,10 @@ class HFStateSync:
         self._timer: Optional[threading.Timer] = None
         self._due_at: Optional[float] = None
         self._dirty = False
+        self._last_sync_at: int = 0
+        self._last_restore_at: int = 0
+        self._last_error: Optional[str] = None
+        self._last_changes: int = 0
         # plain relative path (e.g. "sessions/abc/session.json") -> (repo_path, plain_sha256)
         self._pushed: dict[str, tuple[str, str]] = {}
 
@@ -177,9 +181,13 @@ class HFStateSync:
                     pushed[plain_rel] = (repo_path, hashlib.sha256(plain).hexdigest())
             with self._lock:
                 self._pushed = pushed
+                self._last_restore_at = int(time.time() * 1000)
+                self._last_error = None
             log.info("HF state sync ready (%s, restored %d file(s), encrypted=%s)",
                      self.repo_id, restored, bool(self._fernet))
         except Exception as exc:
+            with self._lock:
+                self._last_error = str(exc)[:200]
             log.warning("Initial restore from %s failed (continuing with local state): %s", self.repo_id, exc)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -285,12 +293,47 @@ class HFStateSync:
                 log.warning("Failed pushing state snapshot to %s: %s", self.repo_id, exc)
                 with self._lock:
                     self._dirty = True
+                    self._last_error = str(exc)[:200]
                 return False
 
             with self._lock:
                 self._pushed = next_pushed
+                self._last_sync_at = int(time.time() * 1000)
+                self._last_changes = len(operations)
+                self._last_error = None
             log.info("Synced %d state change(s) to private dataset %s", len(operations), self.repo_id)
             return True
+
+    def status(self) -> dict:
+        """Public non-sensitive backup and cache summary for the Settings UI."""
+        with self._lock:
+            snap = {
+                "enabled": self.enabled,
+                "repoId": self.repo_id if self.enabled else None,
+                "encrypted": bool(self._fernet),
+                "dirty": self._dirty,
+                "lastSyncAt": self._last_sync_at,
+                "lastRestoreAt": self._last_restore_at,
+                "lastChanges": self._last_changes,
+                "lastError": self._last_error,
+                "syncedFiles": len(self._pushed),
+            }
+        thumb_bytes = 0
+        video_bytes = 0
+        for root, is_vid in ((config.THUMBS_DIR, False), (config.VIDEO_CACHE_DIR, True)):
+            try:
+                if root.exists():
+                    total = sum(p.stat().st_size for p in root.iterdir() if p.is_file() and ".tmp" not in p.name)
+                    if is_vid:
+                        video_bytes = total
+                    else:
+                        thumb_bytes = total
+            except OSError:
+                pass
+        snap["thumbCacheBytes"] = thumb_bytes
+        snap["videoCacheBytes"] = video_bytes
+        snap["cacheBytes"] = thumb_bytes + video_bytes
+        return snap
 
     def stop(self) -> None:
         """Cancel pending timer and flush any unsaved state before process exit."""
@@ -317,6 +360,10 @@ def mark_dirty(urgent: bool = False) -> None:
 
 def flush() -> bool:
     return syncer.flush()
+
+
+def status() -> dict:
+    return syncer.status()
 
 
 def stop() -> None:

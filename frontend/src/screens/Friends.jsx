@@ -11,6 +11,7 @@ import { Navbar, nav } from '../ui/nav.jsx';
 import { ui } from '../ui/overlays.jsx';
 import { Button, SkeletonList, Spinner, StateView } from '../ui/kit.jsx';
 import { RECONNECT_EVENT } from '../components/AppStatus.jsx';
+import { MemoryViewer } from '../components/MemoryViewer.jsx';
 
 export const inviteLink = () => `https://locket.cam/${appStore.get().user?.username || ''}`;
 
@@ -276,6 +277,7 @@ export function FriendProfile({ view }) {
   const { uid } = view.props;
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
+  const [viewerIdx, setViewerIdx] = useState(null);
   // the live relationship from the store wins, so the page reacts at once to any action
   const relation = useApp((s) => {
     if (uid === s.user?.uid) return 'self';
@@ -348,8 +350,8 @@ export function FriendProfile({ view }) {
                   <button type="button" className="link-btn" onClick={memories}>Xem tất cả</button>
                 </div>
                 <div className="fp-grid">
-                  {data.recent.map((m) => (
-                    <button type="button" key={m.id} className="mem-tile" onClick={memories} title={fullDate(m.createdAt)}>
+                  {data.recent.map((m, i) => (
+                    <button type="button" key={m.id} className="mem-tile" onClick={() => setViewerIdx(i)} title={fullDate(m.createdAt)}>
                       <img src={thumb(m.image)} alt="" loading="lazy" decoding="async" draggable="false" />
                       {m.video ? <span className="vid"><Icon name="play" /></span> : null}
                     </button>
@@ -370,6 +372,17 @@ export function FriendProfile({ view }) {
           </>
         ) : null}
       </div>
+      {viewerIdx !== null && data?.recent?.[viewerIdx] ? (
+        <MemoryViewer
+          list={data.recent}
+          index={viewerIdx}
+          hasMore={false}
+          onIndex={setViewerIdx}
+          onNeedMore={() => {}}
+          onClose={() => setViewerIdx(null)}
+          onPatch={(id, fields) => setData((d) => (d ? { ...d, recent: d.recent.map((x) => (x.id === id ? { ...x, ...fields } : x)) } : d))}
+        />
+      ) : null}
     </>
   );
 }

@@ -559,8 +559,171 @@ class MomentsMixin:
             },
         }
 
+    def stats(self, tz_minutes: int = 0) -> dict:
+        """Personal recap statistics and On This Day memories, computed purely from local synced history."""
+        with self._feed_lock:
+            self._sync()
+            items = self.store.all()
+        self._ensure_cache_loaded()
+        with self._state_lock:
+            comments_snap = {k: list(v) for k, v in self._comments.items()}
+
+        now_local = self._local_date(int(time.time() * 1000), tz_minutes)
+        today_ordinal = now_local.date().toordinal()
+        photos = videos = mine_count = friends_count = 0
+        my_days: set[int] = set()
+        all_days: set[int] = set()
+        friend_moments: dict[str, int] = {}
+        friend_comments: dict[str, int] = {}
+        month_buckets: dict[tuple[int, int], dict] = {}
+        on_this_day_year: list = []
+        on_this_day_month: list = []
+
+        for m in items:
+            is_vid = bool(m.get("video"))
+            if is_vid:
+                videos += 1
+            else:
+                photos += 1
+            owner = m.get("owner") or ""
+            if owner == self.uid:
+                mine_count += 1
+            elif owner:
+                friends_count += 1
+                friend_moments[owner] = friend_moments.get(owner, 0) + 1
+
+            ts = m.get("createdAt") or 0
+            if not ts:
+                continue
+            dt = self._local_date(ts, tz_minutes)
+            day_ord = dt.date().toordinal()
+            all_days.add(day_ord)
+            if owner == self.uid:
+                my_days.add(day_ord)
+
+            mk = (dt.year, dt.month)
+            bucket = month_buckets.get(mk)
+            if bucket is None:
+                bucket = {"year": dt.year, "month": dt.month, "photos": 0, "videos": 0, "total": 0}
+                month_buckets[mk] = bucket
+            bucket["total"] += 1
+            if is_vid:
+                bucket["videos"] += 1
+            else:
+                bucket["photos"] += 1
+
+            if dt.day == now_local.day and dt.date() < now_local.date():
+                if dt.month == now_local.month and dt.year < now_local.year:
+                    on_this_day_year.append(m)
+                elif (dt.year, dt.month) != (now_local.year, now_local.month):
+                    on_this_day_month.append(m)
+
+        for rows in comments_snap.values():
+            for r in rows:
+                peer = r.get("peer") or (r.get("sender") if r.get("sender") != self.uid else "")
+                if peer and peer != self.uid:
+                    friend_comments[peer] = friend_comments.get(peer, 0) + 1
+
+        def _streaks(days_set: set[int]) -> tuple[int, int]:
+            if not days_set:
+                return 0, 0
+            # Current streak counts if active today or yesterday
+            cur = 0
+            cursor = today_ordinal if today_ordinal in days_set else (today_ordinal - 1 if (today_ordinal - 1) in days_set else None)
+            while cursor is not None and cursor in days_set:
+                cur += 1
+                cursor -= 1
+            longest = 0
+            run = 0
+            prev = None
+            for d in sorted(days_set):
+                run = run + 1 if prev is not None and d == prev + 1 else 1
+                if run > longest:
+                    longest = run
+                prev = d
+            return cur, longest
+
+        my_streak, my_longest = _streaks(my_days)
+        all_streak, all_longest = _streaks(all_days)
+
+        # Last 12 calendar months chronologically
+        monthly = []
+        y, mo = now_local.year, now_local.month
+        for _ in range(12):
+            b = month_buckets.get((y, mo), {"year": y, "month": mo, "photos": 0, "videos": 0, "total": 0})
+            monthly.append({**b, "label": f"T{mo}"})
+            mo -= 1
+            if mo == 0:
+                mo = 12
+                y -= 1
+        monthly.reverse()
+
+        # Rank top friends by combined moments + comments
+        all_peers = set(friend_moments) | set(friend_comments)
+        ranked_uids = sorted(
+            all_peers,
+            key=lambda u: (friend_moments.get(u, 0) * 2 + friend_comments.get(u, 0), friend_moments.get(u, 0)),
+            reverse=True,
+        )[:6]
+
+        otd_kind = "year" if on_this_day_year else ("month" if on_this_day_month else None)
+        otd_raw = (on_this_day_year or on_this_day_month)[:20]
+
+        need_uids = ranked_uids + [m["owner"] for m in otd_raw] + [self.uid]
+        users = self._users(need_uids)
+        users[self.uid] = self.me()
+
+        top_friends = [
+            {
+                "user": users.get(uid) or self._user_from_profile({}, uid),
+                "moments": friend_moments.get(uid, 0),
+                "comments": friend_comments.get(uid, 0),
+            }
+            for uid in ranked_uids
+        ]
+
+        return {
+            "total": len(items),
+            "photos": photos,
+            "videos": videos,
+            "mineCount": mine_count,
+            "friendsCount": friends_count,
+            "activeDays": len(all_days),
+            "myStreak": my_streak,
+            "myLongestStreak": my_longest,
+            "currentStreak": all_streak,
+            "longestStreak": all_longest,
+            "monthly": monthly,
+            "topFriends": top_friends,
+            "onThisDayKind": otd_kind,
+            "onThisDay": [self._public(m, users) for m in otd_raw],
+        }
+
+    def export_targets(self, moment_ids: list) -> list:
+        """Resolve authenticated user's own stored moment IDs to upstream download targets for ZIP export."""
+        out = []
+        seen: set[str] = set()
+        for mid in moment_ids[:60]:
+            if not isinstance(mid, str) or not mid or mid in seen:
+                continue
+            seen.add(mid)
+            entry = self.store.get(mid)
+            if not entry:
+                continue
+            url = entry.get("video") or entry.get("image")
+            if not url:
+                continue
+            out.append({
+                "id": mid,
+                "url": url,
+                "is_video": bool(entry.get("video")),
+                "createdAt": entry.get("createdAt") or 0,
+            })
+        return out
+
     def post_moment(self, image, video, caption, preset, recipients, private: bool = False,
-                    mirror_video: bool = False, video_start: float = 0.0, video_length: float = 0.0) -> dict:
+                    mirror_video: bool = False, video_start: float = 0.0, video_length: float = 0.0,
+                    overlay_meta: Optional[dict] = None) -> dict:
         self._token()
         if video:
             # browsers record WebM/MP4 in any shape; Locket stores square MP4 under 6 MB
@@ -570,23 +733,37 @@ class MomentsMixin:
                   "is_private": bool(private)}
         if preset and preset != "standard":
             kwargs["note_type"] = preset
+        if overlay_meta:
+            if overlay_meta.get("colors"):
+                kwargs["colors"] = overlay_meta["colors"]
+            if overlay_meta.get("textColor"):
+                kwargs["text_color"] = overlay_meta["textColor"]
+        self._overlay_ctx.meta = overlay_meta
         try:
-            res = self.client.moments.post(image=image or None, video=video or None, **kwargs)
-        except (StorageUploadError, LocketAPIError) as exc:
-            raise ProviderError(f"Đăng khoảnh khắc thất bại: {exc}", 502) from exc
-        except AuthenticationError as exc:
-            raise AuthExpired() from exc
-        except requests.RequestException as exc:
-            raise ProviderError("Không kết nối được máy chủ Locket.", 502) from exc
-        mid = (res or {}).get("canonical_uid") or (res or {}).get("id")
-        history = self.client.moments._load_history()
-        item = next((h for h in history if (h.get("canonical_uid") or h.get("moment_uid")) == mid), None)
-        if not item:
-            raise ProviderError("Locket không trả về khoảnh khắc vừa đăng.", 502)
-        entry = self._entry({**item, "user": self.uid, "created_at": int(time.time() * 1000)})
-        if caption or preset:
-            overlay = self.client.moments.build_overlay(text=caption or "", note_type=preset or "standard")
-            entry["overlay"] = self._overlay({"overlays": [overlay]})
+            try:
+                res = self.client.moments.post(image=image or None, video=video or None, **kwargs)
+            except (StorageUploadError, LocketAPIError) as exc:
+                raise ProviderError(f"Đăng khoảnh khắc thất bại: {exc}", 502) from exc
+            except AuthenticationError as exc:
+                raise AuthExpired() from exc
+            except requests.RequestException as exc:
+                raise ProviderError("Không kết nối được máy chủ Locket.", 502) from exc
+            mid = (res or {}).get("canonical_uid") or (res or {}).get("id")
+            history = self.client.moments._load_history()
+            item = next((h for h in history if (h.get("canonical_uid") or h.get("moment_uid")) == mid), None)
+            if not item:
+                raise ProviderError("Locket không trả về khoảnh khắc vừa đăng.", 502)
+            entry = self._entry({**item, "user": self.uid, "created_at": int(time.time() * 1000)})
+            if caption or preset or overlay_meta:
+                overlay = self.client.moments.build_overlay(
+                    text=caption or "",
+                    note_type=preset or "standard",
+                    colors=(overlay_meta or {}).get("colors"),
+                    text_color=(overlay_meta or {}).get("textColor"),
+                )
+                entry["overlay"] = self._overlay({"overlays": [overlay]})
+        finally:
+            self._overlay_ctx.meta = None
         self.store.upsert(entry)
         self.store.save()
         return self._public(entry, {self.uid: self.me()})

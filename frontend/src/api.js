@@ -92,7 +92,42 @@ export const api = {
     if (year && month) params.set('month', String(month));
     return request('GET', `/api/memories?${params}`);
   },
-  postMoment: ({ image, video, caption, preset, recipients, isPrivate = false, videoMirror = false, videoStart = 0, videoLength = 0, onProgress }) => {
+  memoriesStats: () => request('GET', `/api/memories/stats?tz=${enc(-new Date().getTimezoneOffset())}`),
+  exportMemories: async (ids) => {
+    let res;
+    try {
+      res = await fetch('/api/memories/export', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-Locket-Client': 'web' },
+        body: JSON.stringify({ ids }),
+      });
+    } catch {
+      reportNetwork(false);
+      throw new ApiError(navigator.onLine ? 'Mất kết nối tới máy chủ.' : 'Không có kết nối mạng.', 0);
+    }
+    reportNetwork(true);
+    if (!res.ok) {
+      let data = null;
+      try { data = await res.json(); } catch { /* ignore */ }
+      if (res.status === 401) onUnauthorized();
+      throw new ApiError(data?.error || `Lỗi ${res.status}`, res.status, data);
+    }
+    return res.blob();
+  },
+  searchMusic: (q) => request('GET', `/api/tools/music?q=${enc(q)}`),
+  weather: ({ q, lat, lon } = {}) => {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (typeof lat === 'number' && typeof lon === 'number') {
+      params.set('lat', String(lat));
+      params.set('lon', String(lon));
+    }
+    return request('GET', `/api/tools/weather?${params}`);
+  },
+  syncStatus: () => request('GET', '/api/sync/status'),
+  syncNow: () => request('POST', '/api/sync/now'),
+  postMoment: ({ image, video, caption, preset, overlayMeta, recipients, isPrivate = false, videoMirror = false, videoStart = 0, videoLength = 0, onProgress }) => {
     const form = new FormData();
     if (image) form.append('image', image, 'moment.jpg');
     if (video) {
@@ -104,6 +139,7 @@ export const api = {
     }
     form.append('caption', caption || '');
     form.append('preset', preset || '');
+    if (overlayMeta) form.append('overlay_meta', JSON.stringify(overlayMeta));
     form.append('recipients', JSON.stringify(recipients || []));
     form.append('private', isPrivate ? 'true' : 'false');
     return upload('/api/moments', form, onProgress);

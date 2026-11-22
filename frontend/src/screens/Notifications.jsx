@@ -10,7 +10,7 @@ import { ago, fullDate, isDesktop, thumb } from '../lib/format.js';
 import { appStore, loadNotifications, markNotificationsRead, useApp } from '../store.js';
 import { Navbar, nav } from '../ui/nav.jsx';
 import { ui } from '../ui/overlays.jsx';
-import { MemoryViewer } from './Memories.jsx';
+import { MemoryViewer } from '../components/MemoryViewer.jsx';
 import { openComments } from './Interactions.jsx';
 import { friendActions } from './Friends.jsx';
 import { Button, SkeletonList, StateView } from '../ui/kit.jsx';

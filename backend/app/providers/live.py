@@ -101,8 +101,9 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
         self._comments: dict = {}          # moment id -> chat messages written about it
         self._comments_at: dict = {}       # conversation id -> when its comments were last refreshed
         self._profiles_dirty_at = 0.0
+        self._overlay_ctx = threading.local()
         self._patch_session_safety()
-        self._patch_time_caption()
+        self._patch_overlay_builder()
         self._full_at = self._delta_at = self._chat_at = 0.0
         self._notif_state: Optional[NotificationState] = None
         self._notif_cache: Optional[dict] = None
@@ -147,20 +148,66 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
         session.get_valid_token = safe_get_valid_token
         session.save = atomic_save
 
-    def _patch_time_caption(self) -> None:
-        """The SDK builds the time caption without the clock icon and date payload the iPhone app
-        sends (shape taken from a real caption:time overlay), so add them."""
+    def _patch_overlay_builder(self) -> None:
+        """Enrich SDK overlays for smart captions (time, music, review, location, weather, custom colors)
+        without modifying the vendored SDK."""
         build = self.client.moments.build_overlay
 
         def patched(*args, **kwargs):
             overlay = build(*args, **kwargs)
-            if overlay.get("overlay_id") == "caption:time":
-                data = overlay["data"]
+            meta = getattr(self._overlay_ctx, "meta", None) or {}
+            oid = overlay.get("overlay_id")
+            data = overlay.setdefault("data", {})
+            bg = data.setdefault("background", {"material_blur": "regular", "colors": []})
+
+            if oid == "caption:time":
                 data["payload"] = {"date": time.time()}
                 data["icon"] = {"type": "sf_symbol", "data": "clock.fill", "color": "#FFFFFFCC"}
-                data["background"] = {"material_blur": "regular", "colors": []}
+                bg["material_blur"] = "regular"
+                bg.setdefault("colors", [])
                 data["text_color"] = "#FFFFFFE6"
                 overlay["alt_text"] = data.get("text") or ""
+            elif oid == "caption:music":
+                music = meta.get("music") or {}
+                title = music.get("title") or data.get("text") or ""
+                artist = music.get("artist") or ""
+                if not data.get("text"):
+                    data["text"] = f"{title} – {artist}" if title and artist else (title or artist)
+                payload = {"song_title": title, "artist": artist}
+                if music.get("previewUrl"):
+                    payload["preview_url"] = music["previewUrl"]
+                if music.get("link"):
+                    key = "spotify_url" if "spotify.com" in music["link"] else "apple_music_url"
+                    payload[key] = music["link"]
+                data["type"] = "music"
+                data["payload"] = payload
+                if music.get("artwork"):
+                    data["icon"] = {"type": "image", "data": music["artwork"]}
+                else:
+                    data["icon"] = {"type": "sf_symbol", "data": "music.note", "color": "#FFFFFFCC"}
+                overlay["alt_text"] = data.get("text") or title
+            elif oid == "caption:review":
+                rating = meta.get("rating")
+                data["type"] = "review"
+                data["icon"] = {"type": "sf_symbol", "data": "star.fill", "color": "#FFC629"}
+                if isinstance(rating, (int, float)):
+                    data["payload"] = {"rating": rating}
+                overlay["alt_text"] = f"★ {rating} {data.get('text') or ''}".strip() if rating else (data.get("text") or "")
+            elif oid == "caption:location":
+                data["type"] = "location"
+                data["icon"] = {"type": "sf_symbol", "data": "location.fill", "color": "#FFFFFFCC"}
+                overlay["alt_text"] = data.get("text") or ""
+            elif oid == "caption:weather":
+                sym = (meta.get("weather") or {}).get("symbol") or "sun.max.fill"
+                data["type"] = "weather"
+                data["icon"] = {"type": "sf_symbol", "data": sym, "color": "#FFFFFFCC"}
+                overlay["alt_text"] = data.get("text") or ""
+
+            if meta.get("colors"):
+                bg["colors"] = list(meta["colors"])
+                bg["material_blur"] = "regular"
+            if meta.get("textColor"):
+                data["text_color"] = meta["textColor"]
             return overlay
 
         self.client.moments.build_overlay = patched

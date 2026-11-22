@@ -1,19 +1,17 @@
 // Memories: the whole synced history as a timeline, grouped by day / month / year, with type,
-// author and period filters, accent-insensitive search, endless loading and a full-screen viewer.
+// author and period filters, accent-insensitive search, endless loading, multi-select ZIP export and viewer.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { api } from '../api.js';
 import { Avatar } from '../components/Avatar.jsx';
-import { CaptionPill } from '../components/CaptionPill.jsx';
+import { MemoryViewer } from '../components/MemoryViewer.jsx';
 import { Icon } from '../lib/icons.jsx';
 import { downloadBlob, fullDate, thumb } from '../lib/format.js';
-import { Navbar, nav, pushBack } from '../ui/nav.jsx';
+import { Navbar, nav } from '../ui/nav.jsx';
 import { ui } from '../ui/overlays.jsx';
-import { MomentVideo } from './MomentPage.jsx';
-import { MyReactions, openActivity, openComments, openEmojiPicker, sendReaction } from './Interactions.jsx';
-import { QUICK_EMOJI, appStore } from '../store.js';
+import { appStore } from '../store.js';
 import { RECONNECT_EVENT } from '../components/AppStatus.jsx';
 import { SkeletonGrid, Spinner, StateView } from '../ui/kit.jsx';
+import { openRecap } from './RecapModal.jsx';
 
 const PAGE = 60;
 const WEEKDAYS = ['Chủ nhật', 'Thứ Hai', 'Thứ Ba', 'Thứ Tư', 'Thứ Năm', 'Thứ Sáu', 'Thứ Bảy'];
@@ -37,137 +35,6 @@ function useDebounced(value, ms) {
   return v;
 }
 
-/* ------------------------------------------------------------------ full-screen viewer */
-export function MemoryViewer({ list, index, hasMore, onIndex, onClose, onNeedMore, onPatch }) {
-  const m = list[index];
-  const [entered, setEntered] = useState(false);
-  const [music, setMusic] = useState(false);
-  const audio = useRef(null);
-  const touch = useRef(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-
-  // the browser back button / Esc close the viewer before the page under it
-  useEffect(() => {
-    const remove = pushBack(() => onCloseRef.current());
-    const t = setTimeout(() => setEntered(true), 20);
-    return () => { remove(); clearTimeout(t); audio.current?.pause(); };
-  }, []);
-  const close = () => history.back();
-
-  const go = useCallback((step) => {
-    const next = index + step;
-    if (next < 0) return;
-    if (next >= list.length) { if (hasMore) onNeedMore(); return; }
-    onIndex(next);
-  }, [index, list.length, hasMore, onIndex, onNeedMore]);
-
-  useEffect(() => { if (hasMore && index >= list.length - 4) onNeedMore(); }, [index, list.length, hasMore, onNeedMore]);
-  useEffect(() => { audio.current?.pause(); setMusic(false); }, [index]);
-
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); go(1); }
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); go(-1); }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [go]);
-
-  // preload neighbours so swiping feels instant
-  useEffect(() => {
-    [list[index + 1], list[index - 1]].forEach((x) => { if (x) { const img = new Image(); img.src = x.image; } });
-  }, [index, list]);
-
-  const [pop, setPop] = useState(null);
-  if (!m) return null;
-
-  const onPointerDown = (e) => { touch.current = { x: e.clientX, y: e.clientY }; };
-  const onPointerUp = (e) => {
-    const t = touch.current;
-    touch.current = null;
-    if (!t) return;
-    const dx = e.clientX - t.x;
-    const dy = e.clientY - t.y;
-    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) go(dx < 0 ? 1 : -1);
-    else if (dy > 110 && Math.abs(dy) > Math.abs(dx)) close();
-  };
-
-  const playMusic = (url) => {
-    if (!audio.current) { audio.current = new Audio(); audio.current.addEventListener('ended', () => setMusic(false)); }
-    if (music) { audio.current.pause(); setMusic(false); return; }
-    audio.current.src = url;
-    setMusic(true);
-    audio.current.play().catch(() => { setMusic(false); ui.error('Không phát được đoạn nhạc này'); });
-  };
-
-  const save = async () => {
-    try {
-      const blob = await (await fetch(m.video || m.image, { credentials: 'same-origin' })).blob();
-      downloadBlob(blob, `locket-${m.id}.${m.video ? 'mp4' : (blob.type.split('/')[1] || 'jpg')}`);
-      ui.success('Đã lưu vào máy');
-    } catch { ui.error('Không lưu được'); }
-  };
-
-  const react = async (emoji) => {
-    const before = m.myReactions || [];
-    setPop(`${emoji}-${Date.now()}`);
-    onPatch(m.id, { myReactions: [...before, emoji] });
-    try { onPatch(m.id, { myReactions: await sendReaction(m, emoji) }); } catch (err) { onPatch(m.id, { myReactions: before }); ui.error(err.message); }
-  };
-  const comments = () => openComments(m, { onCount: (n) => onPatch(m.id, { commentCount: n }) });
-
-  return createPortal(
-    <div className={`mem-viewer ${entered ? 'in' : ''}`} role="dialog" aria-label="Xem khoảnh khắc"
-      onPointerDown={onPointerDown} onPointerUp={onPointerUp}>
-      <header className="mem-viewer-top">
-        <Avatar user={m.user} size={40} />
-        <div className="who">
-          <b>{m.mine ? 'Bạn' : m.user.name}</b>
-          <small>{m.user.username ? `@${m.user.username} · ` : ''}{m.approxDate ? '≈ ' : ''}{fullDate(m.createdAt)}</small>
-        </div>
-        <button type="button" className="icon-btn" aria-label="Lưu vào máy" onClick={save}><Icon name="download" /></button>
-        <button type="button" className="icon-btn" aria-label="Đóng" onClick={close}><Icon name="closeSm" /></button>
-      </header>
-
-      <div className="mem-stage">
-        <button type="button" className="icon-btn mem-nav prev" aria-label="Khoảnh khắc trước" disabled={index === 0} onClick={() => go(-1)}><Icon name="chevLeft" /></button>
-        <div className="moment-media mem-media" key={m.id}>
-          <img src={m.image} alt={m.caption || `Khoảnh khắc của ${m.user.name}`} draggable="false" />
-          {m.video ? <MomentVideo src={m.video} poster={m.image} /> : null}
-          <CaptionPill overlay={m.overlay} playing={music} onPlay={playMusic} />
-          {!m.mine ? <MyReactions list={m.myReactions} /> : null}
-          {pop ? <span key={pop} className="react-pop">{pop.split('-')[0]}</span> : null}
-        </div>
-        <button type="button" className="icon-btn mem-nav next" aria-label="Khoảnh khắc sau" disabled={index >= list.length - 1 && !hasMore} onClick={() => go(1)}><Icon name="chevRight" /></button>
-      </div>
-
-      <footer className="mem-viewer-bottom">
-        <div className="mem-facts">
-          <span className="chip-lite">{m.video ? <><Icon name="play" /> Video</> : 'Ảnh'}</span>
-          {m.captionKnown === false && !m.caption ? <span className="chip-lite muted" title="Khoảnh khắc này chỉ biết qua tin nhắn, Locket không cung cấp caption">Không có dữ liệu caption</span> : null}
-          {m.approxDate ? <span className="chip-lite muted" title="Thời gian ước lượng theo tin nhắn nhắc tới khoảnh khắc này">Thời gian ước lượng</span> : null}
-          <span className="mem-count">{index + 1} / {list.length}{hasMore ? '+' : ''}</span>
-        </div>
-        <div className="mem-actions" onPointerDown={(e) => e.stopPropagation()} onPointerUp={(e) => e.stopPropagation()}>
-          {m.mine ? (
-            <button type="button" className="btn btn-dark btn-sm" onClick={() => openActivity(m)}><Icon name="heart" /> Hoạt động</button>
-          ) : (
-            <span className="quick">
-              {(m.suggestedReactions?.length ? m.suggestedReactions : QUICK_EMOJI).slice(0, 3).map((e) => (
-                <button type="button" key={e} onClick={() => react(e)} aria-label={`Thả ${e}`}>{e}</button>
-              ))}
-              <button type="button" className="more-emoji" aria-label="Thêm cảm xúc" onClick={(e) => openEmojiPicker(e.currentTarget, react)}><Icon name="emojiAdd" /></button>
-            </span>
-          )}
-          <button type="button" className="btn btn-dark btn-sm" onClick={comments}><Icon name="chat" /> {m.commentCount ? `${m.commentCount} bình luận` : 'Bình luận'}</button>
-        </div>
-      </footer>
-    </div>,
-    document.getElementById('layers'),
-  );
-}
-
 /* ------------------------------------------------------------------ page */
 export function Memories({ view }) {
   const [query, setQuery] = useState('');
@@ -182,7 +49,17 @@ export function Memories({ view }) {
     || { status: 'loading', error: '', total: 0, cursor: null, facets: null, historyTotal: 0, loadingMore: false });
   const initialCacheRef = useRef(!view.props?.author && !!appStore.get().memoriesCache);
   const [open, setOpen] = useState(null);           // index in items of the viewer
+  const [otd, setOtd] = useState(null);             // { kind, list } from /api/memories/stats
+  const [otdOpen, setOtdOpen] = useState(null);     // index in otd.list
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState(() => new Set());
+  const [exporting, setExporting] = useState(false);
   const [attempt, setAttempt] = useState(0);        // bumps to retry after an error
+  useEffect(() => {
+    api.memoriesStats().then((d) => {
+      if (d?.onThisDay?.length) setOtd({ kind: d.onThisDayKind, list: d.onThisDay });
+    }).catch(() => {});
+  }, []);
   // back online after a failed load: try again by itself
   const failed = state.status === 'error';
   useEffect(() => {
@@ -287,9 +164,53 @@ export function Memories({ view }) {
 
   const reset = () => { setQuery(''); setKind('all'); setAuthor(null); setYear(null); setMonth(null); };
 
+  const toggleSelectMode = () => {
+    setSelecting((v) => {
+      if (v) setPicked(new Set());
+      return !v;
+    });
+  };
+
+  const togglePick = (id) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else if (next.size < 60) next.add(id);
+      else ui.warning('Mỗi lần tải ZIP tối đa 60 khoảnh khắc');
+      return next;
+    });
+  };
+
+  const pickVisible = () => {
+    setPicked(new Set(items.slice(0, 60).map((m) => m.id)));
+  };
+
+  const downloadZip = async () => {
+    if (!picked.size || exporting) return;
+    setExporting(true);
+    try {
+      ui.info(`Đang nén ${picked.size} khoảnh khắc thành ZIP…`, 2500);
+      const blob = await api.exportMemories([...picked]);
+      downloadBlob(blob, `locket-memories-${new Date().toISOString().slice(0, 10)}.zip`);
+      ui.success(`Đã tải xong ${picked.size} khoảnh khắc`);
+      setSelecting(false);
+      setPicked(new Set());
+    } catch (err) {
+      ui.error(err.message || 'Không tải được album ZIP');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <>
-      <Navbar title="Kỷ niệm" onBack={() => nav.pop(view.id)} />
+      <Navbar title="Kỷ niệm" onBack={() => nav.pop(view.id)}
+        right={(
+          <span className="nav-actions">
+            <button type="button" className="icon-btn pressable" aria-label="Thống kê & Recap" title="Thống kê & Recap" onClick={openRecap}><Icon name="chart" /></button>
+            <button type="button" className={`icon-btn pressable ${selecting ? 'on' : ''}`} aria-label={selecting ? 'Hủy chọn' : 'Chọn nhiều để tải ZIP'} title="Chọn nhiều để tải ZIP" onClick={toggleSelectMode}><Icon name="checkSquare" /></button>
+          </span>
+        )} />
       <div className="view-scroll mem-scroll" ref={scrollRef}>
         <div className="mem-tools">
           <form className="search" onSubmit={(e) => { e.preventDefault(); e.currentTarget.querySelector('input').blur(); }}>
@@ -355,20 +276,44 @@ export function Memories({ view }) {
           <StateView icon={filtered ? 'search' : 'camera'} title="Không có khoảnh khắc nào" text={filtered ? 'Thử bỏ bớt bộ lọc hoặc đổi từ khóa tìm kiếm.' : 'Chụp một tấm ảnh để bắt đầu.'} />
         ) : null}
 
-        <div className={`mem-timeline ${state.status === 'loading' && items.length ? 'stale' : ''}`}>
+        {!filtered && otd?.list?.length ? (
+          <div className="mem-otd">
+            <div className="mem-otd-head">
+              <Icon name="sparkles" />
+              <b>{otd.kind === 'year' ? 'Ngày này năm xưa' : 'Ngày này tháng trước'}</b>
+              <small>{otd.list.length} kỷ niệm</small>
+            </div>
+            <div className="mem-otd-row">
+              {otd.list.map((m, idx) => (
+                <button type="button" key={m.id} className="mem-tile otd-tile" onClick={() => setOtdOpen(idx)} title={fullDate(m.createdAt)}>
+                  <img src={thumb(m.image)} alt="" loading="lazy" decoding="async" draggable="false" />
+                  {m.video ? <span className="vid"><Icon name="play" /></span> : null}
+                  <span className="otd-yr">{otd.kind === 'year' ? new Date(m.createdAt).getFullYear() : `T${new Date(m.createdAt).getMonth() + 1}`}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        <div className={`mem-timeline ${state.status === 'loading' && items.length ? 'stale' : ''} ${selecting ? 'selecting' : ''}`}>
           {sections.map((sec) => (
             <section key={sec.key} className="mem-section">
               <h3 className="mem-head"><span>{sec.label}</span><small>{sec.items.length}</small></h3>
               <div className={`mem-grid ${groupBy}`}>
-                {sec.items.map(({ m, i }) => (
-                  <button type="button" key={m.id} className="mem-tile" onClick={() => setOpen(i)}
-                    title={`${m.mine ? 'Bạn' : m.user.name} · ${fullDate(m.createdAt)}${m.caption ? ` · ${m.caption}` : ''}`}>
-                    <img src={thumb(m.image)} alt="" loading="lazy" decoding="async" draggable="false" />
-                    {m.video ? <span className="vid"><Icon name="play" /></span> : null}
-                    {!author ? <span className="by"><Avatar user={m.user} size={22} /></span> : null}
-                    {m.caption ? <span className="cap">{m.caption}</span> : null}
-                  </button>
-                ))}
+                {sec.items.map(({ m, i }) => {
+                  const isPicked = picked.has(m.id);
+                  return (
+                    <button type="button" key={m.id} className={`mem-tile ${isPicked ? 'picked' : ''}`}
+                      onClick={() => (selecting ? togglePick(m.id) : setOpen(i))}
+                      title={`${m.mine ? 'Bạn' : m.user.name} · ${fullDate(m.createdAt)}${m.caption ? ` · ${m.caption}` : ''}`}>
+                      <img src={thumb(m.image)} alt="" loading="lazy" decoding="async" draggable="false" />
+                      {m.video ? <span className="vid"><Icon name="play" /></span> : null}
+                      {!author && !selecting ? <span className="by"><Avatar user={m.user} size={22} /></span> : null}
+                      {selecting ? <span className={`mem-check ${isPicked ? 'on' : ''}`}>{isPicked ? <Icon name="check" /> : null}</span> : null}
+                      {m.caption ? <span className="cap">{m.caption}</span> : null}
+                    </button>
+                  );
+                })}
               </div>
             </section>
           ))}
@@ -380,9 +325,24 @@ export function Memories({ view }) {
         </div>
       </div>
 
+      {selecting ? (
+        <div className="mem-select-bar">
+          <span className="sel-count"><b>{picked.size}</b> / 60</span>
+          <button type="button" className="btn btn-dark btn-sm" onClick={pickVisible}>Chọn nhanh</button>
+          <button type="button" className="btn btn-gold btn-sm" disabled={!picked.size || exporting} onClick={downloadZip}>
+            {exporting ? 'Đang nén…' : <><Icon name="download" /> Tải ZIP</>}
+          </button>
+          <button type="button" className="icon-btn sm" aria-label="Đóng chọn nhiều" onClick={toggleSelectMode}><Icon name="closeSm" /></button>
+        </div>
+      ) : null}
+
       {open !== null && items[open] ? (
         <MemoryViewer list={items} index={open} hasMore={!!state.cursor} onIndex={setOpen} onClose={() => setOpen(null)} onNeedMore={loadMore}
           onPatch={(id, fields) => setItems((list) => list.map((x) => (x.id === id ? { ...x, ...fields } : x)))} />
+      ) : null}
+      {otdOpen !== null && otd?.list?.[otdOpen] ? (
+        <MemoryViewer list={otd.list} index={otdOpen} hasMore={false} onIndex={setOtdOpen} onClose={() => setOtdOpen(null)} onNeedMore={() => {}}
+          onPatch={(id, fields) => setOtd((cur) => (cur ? { ...cur, list: cur.list.map((x) => (x.id === id ? { ...x, ...fields } : x)) } : cur))} />
       ) : null}
     </>
   );

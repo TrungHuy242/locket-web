@@ -6,7 +6,7 @@ import { Avatar } from '../components/Avatar.jsx';
 import { Icon } from '../lib/icons.jsx';
 import { ago, downloadBlob, thumb, vibrate } from '../lib/format.js';
 import { RECONNECT_EVENT } from '../components/AppStatus.jsx';
-import { EMOJI_PALETTE, QUICK_EMOJI, appStore, loadFriends, loadNotifications, loadUnread, refreshMe, useApp } from '../store.js';
+import { EMOJI_PALETTE, QUICK_EMOJI, appStore, loadFriends, loadNotifications, loadUnread, readFeedCache, refreshMe, useApp, writeFeedCache } from '../store.js';
 import { nav, useSection } from '../ui/nav.jsx';
 import { ui } from '../ui/overlays.jsx';
 import { SkeletonGrid, Spinner, StateView } from '../ui/kit.jsx';
@@ -70,11 +70,15 @@ const HistoryTile = memo(function HistoryTile({ moment: m, idx, active, onPick }
   );
 });
 
-const HistoryPanel = memo(function HistoryPanel({ visible, index, filterLabel, feed, syncNote, loadedCount, onFilter, onPick, onMore }) {
+const HistoryPanel = memo(function HistoryPanel({ visible, index, filterLabel, feed, syncNote, loadedCount, refreshing, onFilter, onPick, onMore, onRefresh }) {
   return (
     <aside className="history-panel" aria-label="Lịch sử">
       <div className="history-head"><h2>Lịch sử</h2>
-        <button type="button" className="pill" onClick={(e) => onFilter(e.currentTarget)}>{filterLabel}<Icon name="chevDown" /></button></div>
+        <div className="history-head-actions">
+          <button type="button" className={`icon-btn sm ${refreshing ? 'spin-slow' : ''}`} aria-label="Làm mới bảng tin" title="Làm mới bảng tin" onClick={onRefresh}><Icon name="refresh" /></button>
+          <button type="button" className="pill" onClick={(e) => onFilter(e.currentTarget)}>{filterLabel}<Icon name="chevDown" /></button>
+        </div>
+      </div>
       <div className="history-scroll" onScroll={(e) => { const b = e.currentTarget; if (b.scrollHeight - b.scrollTop - b.clientHeight < 260) onMore(); }}>
         {visible.length ? (
           <div className="history-grid">
@@ -104,8 +108,14 @@ export function Home({ under }) {
 
   const pagerRef = useRef(null);
   const replyRef = useRef(null);
-  const [moments, setMoments] = useState([]);
-  const [feed, setFeed] = useState({ loaded: false, error: null, total: 0, syncing: false, loadingMore: false });
+  const [moments, setMoments] = useState(() => readFeedCache(appStore.get().user?.uid)?.moments || []);
+  const [feed, setFeed] = useState(() => {
+    const cached = readFeedCache(appStore.get().user?.uid);
+    return { loaded: !!cached, error: null, total: cached?.total || 0, syncing: false, loadingMore: false };
+  });
+  const [refreshing, setRefreshing] = useState(false);
+  const [pullDist, setPullDist] = useState(0);
+  const pullRef = useRef(null);
   const [filterUid, setFilterUid] = useState(null);
   const [index, setIndex] = useState(0);              // 0 = camera, n = nth moment
   const [previewing, setPreviewing] = useState(false);
@@ -147,7 +157,11 @@ export function Home({ under }) {
       if (!old || !sameMoment(old, m)) changed = true;
       byId.set(m.id, m);
     });
-    if (changed) setMoments(sortMoments([...byId.values()]));
+    if (changed) {
+      const sorted = sortMoments([...byId.values()]);
+      momentsRef.current = sorted;
+      setMoments(sorted);
+    }
     return changed;
   }, []);
 
@@ -179,6 +193,7 @@ export function Home({ under }) {
       syncError.current = data.syncError;
       if (data.warnings?.includes('chat') && !warned.current) { warned.current = true; ui.warning('Không đọc được một số cuộc trò chuyện để lấy khoảnh khắc cũ.', 3600); }
       setFeed((f) => ({ ...f, loaded: true, error: null, total, syncing: !!data.syncing }));
+      writeFeedCache(appStore.get().user?.uid, momentsRef.current.length ? momentsRef.current : data.moments, total);
       clearTimeout(syncTimer.current);
       // while the server is still pulling history from Locket, check back quickly
       if (data.syncing) syncTimer.current = setTimeout(() => loadFeed({ silent: true }), 3000);
@@ -460,6 +475,39 @@ export function Home({ under }) {
     }
   };
 
+  const manualRefresh = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await loadFeed({ refresh: true, silent: true });
+      ui.success('Đã cập nhật bảng tin', 1500);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshing, loadFeed]);
+
+  const onTouchStart = (e) => {
+    const pager = pagerRef.current;
+    if (!pager || previewing || pager.scrollTop > 2 || e.touches.length !== 1) return;
+    pullRef.current = { y: e.touches[0].clientY };
+  };
+  const onTouchMove = (e) => {
+    if (!pullRef.current || !pagerRef.current || pagerRef.current.scrollTop > 2) { pullRef.current = null; setPullDist(0); return; }
+    const dy = e.touches[0].clientY - pullRef.current.y;
+    if (dy > 12) setPullDist(Math.min(90, dy));
+    else setPullDist(0);
+  };
+  const onTouchEnd = () => {
+    const triggered = pullDist >= 72;
+    pullRef.current = null;
+    setPullDist(0);
+    if (triggered) manualRefresh();
+  };
+
+  const reactToRef = useRef(reactTo);
+  reactToRef.current = reactTo;
+  const onQuickReact = useCallback((emoji) => reactToRef.current(emoji), []);
+
   const openMore = async () => {
     const m = current;
     if (!m) return;
@@ -471,7 +519,11 @@ export function Home({ under }) {
       if (!await ui.confirm('Xóa khoảnh khắc này?', 'Khoảnh khắc sẽ bị gỡ khỏi Locket của bạn bè.', 'Xóa')) return;
       try {
         await api.deleteMoment(m.id);
-        setMoments((list) => list.filter((x) => x.id !== m.id));
+        setMoments((list) => {
+          const next = list.filter((x) => x.id !== m.id);
+          writeFeedCache(appStore.get().user?.uid, next, Math.max(0, feedRef.current.total - 1));
+          return next;
+        });
         setFeed((f) => ({ ...f, total: Math.max(0, f.total - 1) }));
         ui.success('Đã xóa khoảnh khắc');
       } catch (err) {
@@ -481,8 +533,13 @@ export function Home({ under }) {
   };
 
   const onPosted = useCallback((moment) => {
-    setFeed((f) => ({ ...f, total: f.total + (momentsRef.current.some((m) => m.id === moment.id) ? 0 : 1) }));
-    setMoments((list) => sortMoments([moment, ...list.filter((m) => m.id !== moment.id)]));
+    const nextTotal = feedRef.current.total + (momentsRef.current.some((m) => m.id === moment.id) ? 0 : 1);
+    setFeed((f) => ({ ...f, total: nextTotal }));
+    setMoments((list) => {
+      const next = sortMoments([moment, ...list.filter((m) => m.id !== moment.id)]);
+      writeFeedCache(appStore.get().user?.uid, next, nextTotal);
+      return next;
+    });
     ui.success('Đã gửi khoảnh khắc');
   }, []);
 
@@ -505,13 +562,18 @@ export function Home({ under }) {
 
   return (
     <div className={`home ${under ? `under-${under}` : ''}`} data-view={view} data-mode={previewing ? 'preview' : 'capture'}>
-      <div className="pager" ref={pagerRef} onScroll={onScroll}>
+      {pullDist > 20 || refreshing ? (
+        <div className="ptr-pill" role="status">
+          {refreshing ? <><span className="spinner" /> Đang làm mới…</> : pullDist >= 72 ? 'Thả ra để làm mới' : 'Kéo xuống để làm mới'}
+        </div>
+      ) : null}
+      <div className="pager" ref={pagerRef} onScroll={onScroll} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
         <CameraPage active={index === 0 && !covered} latest={moments[0]} onPreviewChange={setPreviewing} onPosted={onPosted} onOpenHistory={() => goTo(1)} />
         {visible.length
           ? visible.map((m, i) => (
             Math.abs(i + 1 - index) <= 2 ? (
               <MomentPage key={m.id} moment={m} active={i + 1 === index && !covered} playingMusic={music === m.id}
-                onMusic={toggleMusic} onComments={showComments} />
+                onMusic={toggleMusic} onComments={showComments} onQuickReact={onQuickReact} />
             ) : (
               <section key={m.id} className="page page-moment" data-id={m.id} aria-hidden="true" />
             )
@@ -566,7 +628,7 @@ export function Home({ under }) {
       </div>
 
       <HistoryPanel visible={visible} index={index} filterLabel={filterLabel} feed={feed} syncNote={syncNote}
-        loadedCount={loadedCount} onFilter={openFilter} onPick={pickHistory} onMore={loadMore} />
+        loadedCount={loadedCount} refreshing={refreshing} onFilter={openFilter} onPick={pickHistory} onMore={loadMore} onRefresh={manualRefresh} />
 
       {grid ? (
         <GridView list={visible} title={filterLabel} total={feed.total} loaded={loadedCount} onMore={loadMore}

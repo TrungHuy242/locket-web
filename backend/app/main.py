@@ -12,14 +12,17 @@ import tempfile
 import threading
 import time
 import weakref
+import zipfile
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -31,6 +34,7 @@ from . import cache as disk_cache
 from . import captions, config, state_sync, video
 from .providers.base import AuthExpired, Provider, ProviderError
 from .providers.live import LiveProvider
+from .providers.live_common import proxied
 from .sessions import store
 
 config.configure_logging()
@@ -77,7 +81,7 @@ class _SelectiveGZipMiddleware:
         self.gzip = GZipMiddleware(app, minimum_size=minimum_size)
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope.get("path", "") != "/api/media":
+        if scope["type"] == "http" and scope.get("path", "") not in ("/api/media", "/api/memories/export"):
             await self.gzip(scope, receive, send)
             return
         await self.app(scope, receive, send)
@@ -109,7 +113,7 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
+    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(self)")
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; "
@@ -337,12 +341,107 @@ def memories(
                       year=year, month=month if year else None, tz_minutes=tz)
 
 
+class ExportBody(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=60)
+
+
+@app.get("/api/memories/stats")
+def memories_stats(
+    tz: int = Query(default=0, ge=-840, le=840, description="browser UTC offset in minutes"),
+    p: Provider = Depends(current),
+):
+    return p.stats(tz_minutes=tz)
+
+
+def _unlink_silent(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+@app.post("/api/memories/export")
+async def memories_export(body: ExportBody, p: Provider = Depends(current)):
+    """Download up to 60 of the authenticated user's synced moments as an uncompressed ZIP archive."""
+    targets = await run_in_threadpool(p.export_targets, body.ids)
+    if not targets:
+        raise HTTPException(status_code=404, detail="Không tìm thấy khoảnh khắc nào để tải xuống.")
+
+    client = _get_media_client()
+    sem = asyncio.Semaphore(4)
+
+    async def fetch_one(item: dict):
+        url = item["url"]
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not _host_allowed(parsed.hostname or "") or parsed.port not in (None, 443):
+            return None
+        async with sem:
+            try:
+                async with client.stream("GET", url) as resp:
+                    if resp.status_code != 200:
+                        return None
+                    ctype = (resp.headers.get("content-type") or "").lower()
+                    if not ctype.startswith(("image/", "video/")) or "svg" in ctype:
+                        return None
+                    limit = 12 * 1024 * 1024 if item["is_video"] else config.MAX_IMAGE_BYTES
+                    buf = bytearray()
+                    async for chunk in resp.aiter_bytes(64 * 1024):
+                        buf.extend(chunk)
+                        if len(buf) > limit:
+                            return None
+                    ext = "mp4" if item["is_video"] else ("webp" if "webp" in ctype else "png" if "png" in ctype else "jpg")
+                    ts = item.get("createdAt") or 0
+                    stamp = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y%m%d-%H%M%S") if ts else "moment"
+                    safe_id = "".join(ch for ch in item["id"] if ch.isalnum() or ch in "-_")[:24] or "item"
+                    return f"{stamp}_{safe_id}.{ext}", bytes(buf)
+            except httpx.HTTPError:
+                return None
+
+    results = await asyncio.gather(*(fetch_one(t) for t in targets))
+    files = [r for r in results if r is not None]
+    if not files:
+        raise HTTPException(status_code=502, detail="Không tải được tệp nào từ máy chủ ảnh.")
+
+    fd, tmp_name = tempfile.mkstemp(prefix="locket-export-", suffix=".zip")
+    os.close(fd)
+    zip_path = Path(tmp_name)
+
+    def _write_zip():
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+            used_names: set[str] = set()
+            for name, data in files:
+                final_name = name
+                n = 2
+                while final_name in used_names:
+                    stem, _, ext = name.rpartition(".")
+                    final_name = f"{stem}_{n}.{ext}"
+                    n += 1
+                used_names.add(final_name)
+                zf.writestr(final_name, data)
+
+    try:
+        await run_in_threadpool(_write_zip)
+    except BaseException:
+        _unlink_silent(zip_path)
+        raise
+
+    filename = f"locket-memories-{datetime.now(timezone.utc).strftime('%Y%m%d')}.zip"
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=filename,
+        background=BackgroundTask(_unlink_silent, zip_path),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.post("/api/moments")
 def post_moment(
     image: Optional[UploadFile] = File(None),
     video: Optional[UploadFile] = File(None),
     caption: str = Form(""),
     preset: str = Form(""),
+    overlay_meta: str = Form(""),
     recipients: str = Form("[]"),
     private: bool = Form(False),
     video_mirror: bool = Form(False),
@@ -357,6 +456,14 @@ def post_moment(
         raise HTTPException(status_code=422, detail="Danh sách người nhận không hợp lệ.") from exc
     if preset and not captions.is_valid(preset):
         raise HTTPException(status_code=422, detail="Kiểu chú thích không hợp lệ.")
+    parsed_meta = None
+    if overlay_meta:
+        try:
+            raw_meta = json.loads(overlay_meta)
+            assert isinstance(raw_meta, dict)
+            parsed_meta = captions.sanitize_overlay_meta(raw_meta)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="Dữ liệu kiểu chú thích không hợp lệ.") from exc
     # Locket's own photos are 1020x1020 WebP
     if image is None and video is None:
         raise HTTPException(status_code=422, detail="Chưa có ảnh hoặc video để đăng.")
@@ -366,7 +473,7 @@ def post_moment(
     try:
         return p.post_moment(image_bytes, video_path, caption.strip()[:300], preset or None,
                              [] if private else targets[:200], private=private, mirror_video=video_mirror,
-                             video_start=video_start, video_length=video_length)
+                             video_start=video_start, video_length=video_length, overlay_meta=parsed_meta)
     finally:
         if video_path is not None:
             try:
@@ -742,6 +849,122 @@ async def media(request: Request, u: str = Query(max_length=2000), w: Optional[i
 
     return StreamingResponse(_stream(), status_code=upstream.status_code,
                              media_type=content_type, headers=out_headers)
+
+
+# --------------------------------------------------------------------------- smart tools & sync status
+_WMO_VI = {
+    0: ("Quang đãng", "sun.max.fill", "moon.fill"),
+    1: ("Ít mây", "cloud.sun.fill", "moon.stars.fill"),
+    2: ("Mây rải rác", "cloud.sun.fill", "cloud.fill"),
+    3: ("Nhiều mây", "cloud.fill", "cloud.fill"),
+    45: ("Sương mù", "cloud.fill", "cloud.fill"),
+    48: ("Sương mù", "cloud.fill", "cloud.fill"),
+    51: ("Mưa phùn", "cloud.rain.fill", "cloud.rain.fill"),
+    53: ("Mưa phùn", "cloud.rain.fill", "cloud.rain.fill"),
+    55: ("Mưa phùn", "cloud.rain.fill", "cloud.rain.fill"),
+    61: ("Mưa nhẹ", "cloud.rain.fill", "cloud.rain.fill"),
+    63: ("Có mưa", "cloud.rain.fill", "cloud.rain.fill"),
+    65: ("Mưa to", "cloud.rain.fill", "cloud.rain.fill"),
+    80: ("Mưa rào", "cloud.rain.fill", "cloud.rain.fill"),
+    81: ("Mưa rào", "cloud.rain.fill", "cloud.rain.fill"),
+    82: ("Mưa rào lớn", "cloud.rain.fill", "cloud.rain.fill"),
+    95: ("Giông bão", "cloud.bolt.fill", "cloud.bolt.fill"),
+    96: ("Giông bão", "cloud.bolt.fill", "cloud.bolt.fill"),
+    99: ("Giông bão", "cloud.bolt.fill", "cloud.bolt.fill"),
+}
+
+
+@app.get("/api/tools/music")
+async def search_music(q: str = Query(min_length=1, max_length=100), p: Provider = Depends(current)):
+    """Search songs via free iTunes Search API (no API key) for Music captions."""
+    client = _get_media_client()
+    try:
+        res = await client.get(
+            "https://itunes.apple.com/search",
+            params={"term": q.strip(), "media": "music", "entity": "song", "limit": 10, "country": "VN"},
+            timeout=10.0,
+        )
+        res.raise_for_status()
+        rows = res.json().get("results") or []
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Không tìm được bài hát lúc này.") from exc
+    tracks = []
+    for item in rows:
+        title = (item.get("trackName") or "").strip()
+        artist = (item.get("artistName") or "").strip()
+        if not title:
+            continue
+        artwork = (item.get("artworkUrl100") or item.get("artworkUrl60") or "").replace("100x100bb", "200x200bb")
+        preview = item.get("previewUrl") or ""
+        tracks.append({
+            "id": str(item.get("trackId") or f"{title}-{artist}"),
+            "title": title,
+            "artist": artist,
+            "artwork": artwork,
+            "artworkProxy": proxied(artwork) if artwork else None,
+            "previewUrl": preview,
+            "previewProxy": proxied(preview) if preview else None,
+            "appleMusicUrl": item.get("trackViewUrl") or "",
+        })
+    return {"tracks": tracks}
+
+
+@app.get("/api/tools/weather")
+async def lookup_weather(
+    q: str = Query(default="", max_length=80),
+    lat: Optional[float] = Query(default=None, ge=-90, le=90),
+    lon: Optional[float] = Query(default=None, ge=-180, le=180),
+    p: Provider = Depends(current),
+):
+    """Fetch live weather via free Open-Meteo (city name or coordinates) for Weather captions."""
+    client = _get_media_client()
+    city = q.strip()
+    if lat is None or lon is None:
+        if not city:
+            raise HTTPException(status_code=422, detail="Nhập tên thành phố hoặc bật vị trí.")
+        try:
+            geo = await client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": city, "count": 1, "language": "vi", "format": "json"},
+                timeout=10.0,
+            )
+            geo.raise_for_status()
+            places = geo.json().get("results") or []
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="Không tra được địa điểm.") from exc
+        if not places:
+            raise HTTPException(status_code=404, detail=f"Không tìm thấy '{city}'.")
+        lat = float(places[0]["latitude"])
+        lon = float(places[0]["longitude"])
+        city = places[0].get("name") or city
+    try:
+        fc = await client.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={"latitude": lat, "longitude": lon, "current": "temperature_2m,weather_code,is_day"},
+            timeout=10.0,
+        )
+        fc.raise_for_status()
+        cur = fc.json().get("current") or {}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Không lấy được dữ liệu thời tiết.") from exc
+    temp = round(float(cur.get("temperature_2m", 0)))
+    code = int(cur.get("weather_code", 0))
+    is_day = int(cur.get("is_day", 1)) == 1
+    desc, day_sym, night_sym = _WMO_VI.get(code, ("Nhiều mây", "cloud.fill", "cloud.fill"))
+    sym = day_sym if is_day else night_sym
+    label = f"{temp}°C · {desc}" + (f" · {city}" if city else "")
+    return {"temp": temp, "desc": desc, "symbol": sym, "city": city, "text": label}
+
+
+@app.get("/api/sync/status")
+def sync_status(p: Provider = Depends(current)):
+    return state_sync.status()
+
+
+@app.post("/api/sync/now")
+async def sync_now(p: Provider = Depends(current)):
+    synced = await run_in_threadpool(state_sync.flush)
+    return {"synced": bool(synced), "status": state_sync.status()}
 
 
 @app.get("/api/health")

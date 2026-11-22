@@ -10,7 +10,7 @@ import { Icon } from '../lib/icons.jsx';
 import { ago, clock, fullDate, isDesktop, thumb } from '../lib/format.js';
 import { MomentVideo } from './MomentPage.jsx';
 import { getSettings } from '../lib/settings.js';
-import { EMOJI_PALETTE, appStore, loadUnread, useApp } from '../store.js';
+import { EMOJI_PALETTE, appStore, fold, getChatDraft, loadUnread, setChatDraft, useApp } from '../store.js';
 import { Navbar, nav } from '../ui/nav.jsx';
 import { ui } from '../ui/overlays.jsx';
 
@@ -28,6 +28,8 @@ export function ChatList({ view }) {
   const [rows, setRows] = useState(() => appStore.get().conversations);
   const [error, setError] = useState(null);
   const [peer, setPeer] = useState(() => view.props?.peer || (isDesktop() && appStore.get().conversations?.length ? appStore.get().conversations[0].peer : null));   // thread shown in the desktop pane
+  const [query, setQuery] = useState('');
+  const [unreadOnly, setUnreadOnly] = useState(false);
 
   useEffect(() => {
     const mq = window.matchMedia('(min-width: 769px)');
@@ -61,24 +63,45 @@ export function ChatList({ view }) {
     else nav.push('thread', { peer: p, onClose: load });
   };
 
+  const q = fold(query.trim());
   const withChat = new Set((rows || []).map((c) => c.peer.uid));
-  const others = friends.filter((f) => !withChat.has(f.uid));
+  const unreadCount = (rows || []).filter((c) => c.unread > 0).length;
+  const shownRows = (rows || []).filter((c) => {
+    if (unreadOnly && !c.unread) return false;
+    if (!q) return true;
+    return fold(`${c.peer.name} ${c.peer.username} ${c.lastText || ''}`).includes(q);
+  });
+  const others = unreadOnly ? [] : friends.filter((f) => !withChat.has(f.uid) && (!q || fold(`${f.name} ${f.username}`).includes(q)));
 
   return (
     <div className={split ? 'chat-split' : ''} style={{ display: 'flex', flex: 1, minHeight: 0, flexDirection: split ? 'row' : 'column' }}>
       <div className="chat-list">
         <Navbar title="Tin nhắn" onBack={() => nav.pop(view.id)} />
         <div className="view-scroll">
+          <div className="chat-tools">
+            <div className="search" style={{ marginTop: 0 }}>
+              <Icon name="search" />
+              <input type="search" placeholder="Tìm cuộc trò chuyện…" value={query} onChange={(e) => setQuery(e.target.value)} autoComplete="off" spellCheck={false} />
+              {query ? <button type="button" className="x" aria-label="Xóa" onClick={() => setQuery('')}><Icon name="closeSm" /></button> : null}
+            </div>
+            <div className="chat-filters">
+              <button type="button" className={`chip sm ${!unreadOnly ? 'on' : ''}`} onClick={() => setUnreadOnly(false)}>Tất cả</button>
+              <button type="button" className={`chip sm ${unreadOnly ? 'on' : ''}`} onClick={() => setUnreadOnly(true)}>Chưa đọc{unreadCount ? <span className="cnt">{unreadCount}</span> : null}</button>
+            </div>
+          </div>
           {!rows && !error ? <SkeletonList rows={8} avatar={56} /> : null}
           {!rows && error ? <StateView icon="chat" tone="error" title="Không tải được tin nhắn" text={error} action="Thử lại" onAction={load} /> : null}
-          {rows?.map((c) => (
+          {shownRows.map((c) => (
             <button type="button" key={c.id} className={`conv ${c.unread ? 'unread' : ''} ${peer?.uid === c.peer.uid ? 'sel' : ''}`} onClick={() => open(c.peer)}>
               <Avatar user={c.peer} />
               <div className="grow"><b>{c.peer.name}<span>{ago(c.lastAt)}</span></b><p>{c.lastMine ? 'Bạn: ' : ''}{c.lastText || 'Đã gửi một khoảnh khắc'}</p></div>
               {c.unread ? <i className="dot" /> : <span className="chev"><Icon name="chevRight" /></span>}
             </button>
           ))}
-          {rows && !rows.length ? <StateView icon="chat" title="Chưa có tin nhắn" text="Trả lời một khoảnh khắc của bạn bè để bắt đầu trò chuyện." /> : null}
+          {rows && !shownRows.length ? (
+            <StateView icon="chat" title={q || unreadOnly ? 'Không có cuộc trò chuyện phù hợp' : 'Chưa có tin nhắn'}
+              text={unreadOnly ? 'Bạn đã đọc tất cả tin nhắn.' : q ? `Không khớp với "${query.trim()}".` : 'Trả lời một khoảnh khắc của bạn bè để bắt đầu trò chuyện.'} />
+          ) : null}
           {rows && others.length ? (
             <>
               <div className="section-label">Bạn bè</div>
@@ -271,10 +294,13 @@ export function Thread({ peer, onBack, onChange = () => {}, embedded = false }) 
   const live = useLiveChat(peer.uid, () => { setTimeout(() => loadLatest(), 250); });
 
   useEffect(() => {
+    const saved = getChatDraft(peer.uid);
+    if (inputRef.current) inputRef.current.value = saved;
+    setCanSend(!!saved.trim());
     loadLatest(true);
     if (isDesktop()) setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 350);
     return () => loadUnread();
-  }, [loadLatest]);
+  }, [loadLatest, peer.uid]);
 
   // safety net: poll fast while the realtime socket is down, slowly while it is up
   useEffect(() => {
@@ -313,11 +339,31 @@ export function Thread({ peer, onBack, onChange = () => {}, embedded = false }) 
     const text = inputRef.current.value.trim();
     if (!text) return;
     inputRef.current.value = '';
+    setChatDraft(peer.uid, '');
     setCanSend(false);
     stick.current = true;
     const item = { id: `tmp-${Date.now()}`, text, createdAt: Date.now(), status: 'sending' };
     setOutbox((box) => [...box, item]);
     deliver(item);
+  };
+
+  const pickEmoji = (anchor) => {
+    ui.popover(anchor, ({ close }) => (
+      <div className="emoji-pop">
+        {EMOJI_PALETTE.map((em) => (
+          <button type="button" key={em} onClick={() => {
+            close();
+            const el = inputRef.current;
+            if (!el) return;
+            const next = `${el.value}${em}`;
+            el.value = next;
+            setChatDraft(peer.uid, next);
+            setCanSend(!!next.trim());
+            el.focus();
+          }}>{em}</button>
+        ))}
+      </div>
+    ), { align: 'end', above: true });
   };
 
   const pickMoment = () => {
@@ -428,7 +474,8 @@ export function Thread({ peer, onBack, onChange = () => {}, embedded = false }) 
         <form onSubmit={send}>
           <button type="button" className="attach" aria-label="Gửi khoảnh khắc" title="Gửi khoảnh khắc" onClick={pickMoment}><Icon name="gallery" /></button>
           <input ref={inputRef} type="text" placeholder="Gửi tin nhắn..." maxLength={1000} autoComplete="off" enterKeyHint="send"
-            onInput={(e) => setCanSend(!!e.currentTarget.value.trim())} />
+            onInput={(e) => { const v = e.currentTarget.value; setChatDraft(peer.uid, v); setCanSend(!!v.trim()); }} />
+          <button type="button" className="attach emoji-btn" aria-label="Chèn biểu cảm" title="Chèn biểu cảm" onClick={(e) => pickEmoji(e.currentTarget)}><Icon name="emojiAdd" /></button>
           <button className="send" disabled={!canSend} aria-label="Gửi"><Icon name="arrowUp" /></button>
         </form>
       </div>
