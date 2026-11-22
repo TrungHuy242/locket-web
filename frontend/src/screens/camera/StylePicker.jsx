@@ -1,6 +1,7 @@
-// Smart Caption & Style Picker: standard/gradient colors, Music (iTunes search + 30s preview),
-// Review (1-5 stars), Location, Weather (Open-Meteo live), and searchable Locket presets.
-import { useEffect, useMemo, useRef, useState } from 'react';
+// Smart Caption & Style Picker: standard/gradient colors, Music (iTunes + Deezer search & 30s preview),
+// Review (1-5 stars), Location (GPS + live place search + recent), Weather (multi-provider live + VN quick cities),
+// and searchable Locket presets.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api.js';
 import { Icon, SymbolIcon } from '../../lib/icons.jsx';
 import { clock, overlayStyle } from '../../lib/format.js';
@@ -9,6 +10,7 @@ import { ui } from '../../ui/overlays.jsx';
 
 let presetsCache = null;
 
+const RECENT_PLACES_KEY = 'locket.recent.places.v1';
 const GRADIENTS = [
   { id: 'glass', name: 'Kính mờ', colors: [], textColor: '#FFFFFF' },
   { id: 'gold', name: 'Vàng Locket', colors: ['#FFC629', '#FF9F1C'], textColor: '#111111' },
@@ -21,10 +23,32 @@ const GRADIENTS = [
 ];
 
 const QUICK_PLACES = ['Ở nhà', 'Quán cà phê', 'Trường học', 'Công ty', 'Ngoài phố', 'Đi du lịch'];
+const QUICK_CITIES = ['Hà Nội', 'TP.HCM', 'Đà Nẵng', 'Đà Lạt', 'Nha Trang', 'Huế', 'Cần Thơ', 'Hải Phòng'];
+const QUICK_MUSIC = ['Sơn Tùng', 'HIEUTHUHAI', 'Wren Evans', 'tlinh', 'Lofi Chill', 'Taylor Swift'];
+
+function loadRecentPlaces() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(RECENT_PLACES_KEY) || '[]');
+    return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string' && x.trim()).slice(0, 5) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveRecentPlace(name) {
+  const clean = (name || '').trim();
+  if (!clean) return;
+  try {
+    const next = [clean, ...loadRecentPlaces().filter((x) => x.toLowerCase() !== clean.toLowerCase())].slice(0, 5);
+    localStorage.setItem(RECENT_PLACES_KEY, JSON.stringify(next));
+  } catch { /* ignore */ }
+}
 
 export function StylePicker({ onPick, current }) {
   const [presets, setPresets] = useState(presetsCache);
-  const [tab, setTab] = useState('presets'); // presets | music | review | location | weather
+  const [tab, setTab] = useState(() => (
+    ['music', 'review', 'location', 'weather'].includes(current?.type) ? current.type : 'presets'
+  ));
   const [query, setQuery] = useState('');
   const [colorPick, setColorPick] = useState(() => {
     const cur = current?.colors || [];
@@ -35,8 +59,10 @@ export function StylePicker({ onPick, current }) {
   const [musicQ, setMusicQ] = useState('');
   const [tracks, setTracks] = useState([]);
   const [musicBusy, setMusicBusy] = useState(false);
+  const [musicSearched, setMusicSearched] = useState(false);
   const [playingId, setPlayingId] = useState(null);
   const audioRef = useRef(null);
+  const musicReqId = useRef(0);
 
   // Review state
   const [stars, setStars] = useState(current?.rating || 5);
@@ -44,10 +70,14 @@ export function StylePicker({ onPick, current }) {
 
   // Location state
   const [place, setPlace] = useState(current?.type === 'location' ? (current.text || '') : '');
+  const [placeResults, setPlaceResults] = useState([]);
+  const [placeBusy, setPlaceBusy] = useState(false);
+  const [recentPlaces, setRecentPlaces] = useState(() => loadRecentPlaces());
 
   // Weather state
   const [city, setCity] = useState('');
   const [weatherRes, setWeatherRes] = useState(null);
+  const [weatherCompact, setWeatherCompact] = useState(false);
   const [weatherBusy, setWeatherBusy] = useState(false);
 
   useEffect(() => {
@@ -55,11 +85,26 @@ export function StylePicker({ onPick, current }) {
     api.captions().then((d) => { presetsCache = d.presets; setPresets(d.presets); }).catch((err) => ui.error(err.message));
   }, []);
 
-  useEffect(() => () => { audioRef.current?.pause(); }, []);
+  const stopAudio = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    setPlayingId(null);
+  }, []);
+
+  useEffect(() => () => stopAudio(), [stopAudio]);
+
+  const switchTab = (next) => {
+    if (next !== 'music') stopAudio();
+    setTab(next);
+  };
 
   const colorPayload = colorPick.colors.length ? { colors: colorPick.colors, textColor: colorPick.textColor } : null;
+  const iconColor = colorPayload?.textColor || '#FFFFFFCC';
 
   const applyWithColors = (obj) => {
+    stopAudio();
     if (!obj) {
       if (colorPayload) {
         onPick({ key: 'standard', type: 'standard', text: '', ...colorPayload, overlayMeta: colorPayload });
@@ -76,28 +121,43 @@ export function StylePicker({ onPick, current }) {
     });
   };
 
-  const searchTracks = async (e) => {
-    e?.preventDefault();
-    const q = musicQ.trim();
-    if (!q) return;
+  /* ---------------- Music */
+  const runMusicSearch = useCallback(async (term) => {
+    const q = (term || '').trim();
+    if (!q) { setTracks([]); setMusicSearched(false); return; }
+    const reqId = ++musicReqId.current;
     setMusicBusy(true);
     try {
       const data = await api.searchMusic(q);
+      if (reqId !== musicReqId.current) return;
       setTracks(data.tracks || []);
-      if (!data.tracks?.length) ui.info('Không tìm thấy bài hát phù hợp');
+      setMusicSearched(true);
     } catch (err) {
-      ui.error(err.message);
+      if (reqId === musicReqId.current) ui.error(err.message || 'Không tìm được bài hát');
     } finally {
-      setMusicBusy(false);
+      if (reqId === musicReqId.current) setMusicBusy(false);
     }
-  };
+  }, []);
+
+  // Debounced auto-search as user types in Music tab
+  useEffect(() => {
+    if (tab !== 'music') return undefined;
+    const q = musicQ.trim();
+    if (q.length < 2) return undefined;
+    const timer = setTimeout(() => runMusicSearch(q), 420);
+    return () => clearTimeout(timer);
+  }, [tab, musicQ, runMusicSearch]);
 
   const toggleTrackPreview = (e, track) => {
     e.stopPropagation();
-    if (!track.previewProxy) return;
+    if (!track.previewProxy) { ui.info('Bài hát này chưa có đoạn nghe thử'); return; }
     if (!audioRef.current) {
       audioRef.current = new Audio();
       audioRef.current.addEventListener('ended', () => setPlayingId(null));
+      audioRef.current.addEventListener('error', () => {
+        setPlayingId(null);
+        ui.error('Không phát được đoạn nhạc này');
+      });
     }
     const a = audioRef.current;
     if (playingId === track.id && !a.paused) { a.pause(); setPlayingId(null); return; }
@@ -107,13 +167,13 @@ export function StylePicker({ onPick, current }) {
   };
 
   const pickTrack = (track) => {
-    audioRef.current?.pause();
+    stopAudio();
     const label = [track.title, track.artist].filter(Boolean).join(' – ');
     applyWithColors({
       key: 'music',
       type: 'music',
       text: label,
-      icon: track.artworkProxy ? { kind: 'image', value: track.artworkProxy } : { kind: 'symbol', value: 'music.note', color: '#FFFFFFCC' },
+      icon: track.artworkProxy ? { kind: 'image', value: track.artworkProxy } : { kind: 'symbol', value: 'music.note', color: iconColor },
       colors: colorPayload?.colors || ['#1C1C1E', '#2C2C2E'],
       textColor: colorPayload?.textColor || '#FFFFFF',
       overlayMeta: {
@@ -128,13 +188,67 @@ export function StylePicker({ onPick, current }) {
     });
   };
 
+  /* ---------------- Location */
+  const searchPlaces = async (q) => {
+    const clean = (q || '').trim();
+    if (!clean) return;
+    setPlaceBusy(true);
+    try {
+      const data = await api.places({ q: clean });
+      setPlaceResults(data.places || []);
+      if (!data.places?.length) ui.info(`Không tìm thấy địa điểm khớp "${clean}"`);
+    } catch (err) {
+      ui.error(err.message || 'Không tra được địa điểm');
+    } finally {
+      setPlaceBusy(false);
+    }
+  };
+
+  const fetchGpsPlaces = () => {
+    if (!navigator.geolocation) { ui.warning('Trình duyệt không hỗ trợ định vị'); return; }
+    setPlaceBusy(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const data = await api.places({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+          const list = data.places || [];
+          setPlaceResults(list);
+          if (list[0]?.name) setPlace(list[0].name);
+          else if (data.city) setPlace(data.city);
+          else ui.info('Không xác định được tên đường/quận tại vị trí này');
+        } catch (err) {
+          ui.error(err.message || 'Không tra được vị trí hiện tại');
+        } finally {
+          setPlaceBusy(false);
+        }
+      },
+      () => { setPlaceBusy(false); ui.warning('Chưa được cấp quyền vị trí — hãy nhập tên địa điểm'); },
+      { timeout: 9000, enableHighAccuracy: false },
+    );
+  };
+
+  const pickPlace = (label) => {
+    const clean = (label || '').trim();
+    if (!clean) return;
+    saveRecentPlace(clean);
+    setRecentPlaces(loadRecentPlaces());
+    applyWithColors({
+      key: 'location',
+      type: 'location',
+      text: clean,
+      icon: { kind: 'symbol', value: 'location.fill', color: iconColor },
+    });
+  };
+
+  /* ---------------- Weather */
   const fetchWeather = async (opts) => {
     setWeatherBusy(true);
     try {
       const data = await api.weather(opts);
       setWeatherRes(data);
+      if (data.city && !opts.q) setCity(data.city);
     } catch (err) {
-      ui.error(err.message);
+      ui.error(err.message || 'Không lấy được thời tiết lúc này');
     } finally {
       setWeatherBusy(false);
     }
@@ -145,10 +259,14 @@ export function StylePicker({ onPick, current }) {
     setWeatherBusy(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => fetchWeather({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
-      () => { setWeatherBusy(false); ui.warning('Chưa được cấp quyền vị trí — hãy nhập tên thành phố'); },
-      { timeout: 8000 },
+      () => { setWeatherBusy(false); ui.warning('Chưa được cấp quyền vị trí — hãy chọn thành phố bên dưới'); },
+      { timeout: 9000, enableHighAccuracy: false },
     );
   };
+
+  const weatherDisplayText = weatherRes
+    ? (weatherCompact ? (weatherRes.shortText || weatherRes.text) : weatherRes.text)
+    : '';
 
   const filteredSections = useMemo(() => {
     if (!presets) return [];
@@ -165,7 +283,12 @@ export function StylePicker({ onPick, current }) {
 
   return (
     <div className="styles">
-      <div className="sheet-title">Kiểu chú thích</div>
+      <div className="styles-head">
+        <div className="sheet-title">Kiểu chú thích</div>
+        {current ? (
+          <button type="button" className="link-btn" onClick={() => { stopAudio(); onPick(null); }}>Gỡ kiểu</button>
+        ) : null}
+      </div>
 
       <div className="smart-tabs" role="tablist">
         {[
@@ -176,7 +299,7 @@ export function StylePicker({ onPick, current }) {
           ['weather', 'Thời tiết', 'cloud'],
         ].map(([id, label, ic]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id}
-            className={`chip sm ${tab === id ? 'on' : ''}`} onClick={() => setTab(id)}>
+            className={`chip sm ${tab === id ? 'on' : ''}`} onClick={() => switchTab(id)}>
             <Icon name={ic} />{label}
           </button>
         ))}
@@ -217,7 +340,7 @@ export function StylePicker({ onPick, current }) {
               <h4>{name}</h4>
               <div className="chips">
                 {list.map((p) => (
-                  <button type="button" key={p.key} className="chip" style={overlayStyle(p)} onClick={() => onPick(p)}>
+                  <button type="button" key={p.key} className="chip" style={overlayStyle(p)} onClick={() => { stopAudio(); onPick(p); }}>
                     {p.icon ? <span>{p.icon}</span> : null}{p.type === 'time' ? clock(Date.now()) : p.text}
                   </button>
                 ))}
@@ -229,22 +352,37 @@ export function StylePicker({ onPick, current }) {
 
       {tab === 'music' ? (
         <div className="smart-panel">
-          <form className="search" onSubmit={searchTracks}>
+          <form className="search" onSubmit={(e) => { e.preventDefault(); runMusicSearch(musicQ); }}>
             <Icon name="music" />
             <input type="search" placeholder="Tìm tên bài hát hoặc ca sĩ…" value={musicQ}
               onChange={(e) => setMusicQ(e.target.value)} autoComplete="off" enterKeyHint="search" />
+            {musicQ ? (
+              <button type="button" className="x" aria-label="Xóa" onClick={() => { setMusicQ(''); setTracks([]); setMusicSearched(false); stopAudio(); }}>
+                <Icon name="closeSm" />
+              </button>
+            ) : null}
             <button type="submit" className="btn btn-gold btn-sm" disabled={musicBusy || !musicQ.trim()}>
               {musicBusy ? '…' : 'Tìm'}
             </button>
           </form>
+
+          {!musicQ.trim() ? (
+            <div className="chips smart-quick">
+              {QUICK_MUSIC.map((kw) => (
+                <button key={kw} type="button" className="chip sm" onClick={() => { setMusicQ(kw); runMusicSearch(kw); }}>{kw}</button>
+              ))}
+            </div>
+          ) : null}
+
           <div className="music-list">
+            {musicBusy && !tracks.length ? <div className="empty"><span className="spinner" style={{ margin: '0 auto' }} /></div> : null}
             {tracks.map((tr) => (
               <div key={tr.id} className="music-row" role="button" tabIndex={0} onClick={() => pickTrack(tr)}
                 onKeyDown={(e) => { if (e.key === 'Enter') pickTrack(tr); }}>
-                {tr.artworkProxy ? <img src={tr.artworkProxy} alt="" /> : <span className="music-ph"><Icon name="music" /></span>}
+                {tr.artworkProxy ? <img src={tr.artworkProxy} alt="" loading="lazy" /> : <span className="music-ph"><Icon name="music" /></span>}
                 <div className="grow"><b>{tr.title}</b><small>{tr.artist}</small></div>
                 {tr.previewProxy ? (
-                  <button type="button" className={`icon-btn ${playingId === tr.id ? 'on' : ''}`}
+                  <button type="button" className={`icon-btn sm ${playingId === tr.id ? 'on' : ''}`}
                     aria-label={playingId === tr.id ? 'Dừng nghe thử' : 'Nghe thử'}
                     onClick={(e) => toggleTrackPreview(e, tr)}>
                     <Icon name={playingId === tr.id ? 'mute' : 'play'} />
@@ -252,7 +390,11 @@ export function StylePicker({ onPick, current }) {
                 ) : null}
               </div>
             ))}
-            {!tracks.length && !musicBusy ? <p className="smart-hint">Tìm kiếm bài hát qua iTunes để gắn ảnh bìa và đoạn nghe thử 30 giây lên khoảnh khắc.</p> : null}
+            {musicSearched && !tracks.length && !musicBusy ? (
+              <p className="smart-hint">Không tìm thấy bài hát khớp &ldquo;{musicQ.trim()}&rdquo;. Hãy thử từ khóa khác.</p>
+            ) : !tracks.length && !musicBusy ? (
+              <p className="smart-hint">Gõ tên bài hát / ca sĩ hoặc chạm gợi ý phía trên để gắn ảnh bìa và nhạc nghe thử 30s.</p>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -283,23 +425,64 @@ export function StylePicker({ onPick, current }) {
 
       {tab === 'location' ? (
         <div className="smart-panel">
-          <div className="field">
-            <input type="text" maxLength={60} placeholder="Nhập tên địa điểm…" value={place} onChange={(e) => setPlace(e.target.value)} />
+          <form className="search" onSubmit={(e) => { e.preventDefault(); searchPlaces(place); }}>
+            <Icon name="pin" />
+            <input type="search" maxLength={60} placeholder="Tìm hoặc nhập tên địa điểm…" value={place}
+              onChange={(e) => setPlace(e.target.value)} autoComplete="off" enterKeyHint="search" />
+            {place ? (
+              <button type="button" className="x" aria-label="Xóa" onClick={() => { setPlace(''); setPlaceResults([]); }}>
+                <Icon name="closeSm" />
+              </button>
+            ) : null}
+            <button type="submit" className="btn btn-gold btn-sm" disabled={placeBusy || !place.trim()}>
+              {placeBusy ? '…' : 'Tìm'}
+            </button>
+          </form>
+
+          <div className="smart-actions-row">
+            <button type="button" className="btn btn-dark btn-sm" disabled={placeBusy} onClick={fetchGpsPlaces}>
+              <Icon name="pin" /> {placeBusy ? 'Đang định vị…' : 'Lấy vị trí hiện tại'}
+            </button>
+            {place.trim() ? (
+              <button type="button" className="btn btn-gold btn-sm" onClick={() => pickPlace(place)}>
+                Gắn &ldquo;{place.trim().slice(0, 18)}{place.trim().length > 18 ? '…' : ''}&rdquo;
+              </button>
+            ) : null}
           </div>
-          <div className="chips" style={{ marginTop: 10 }}>
-            {QUICK_PLACES.map((pl) => (
-              <button key={pl} type="button" className="chip sm" onClick={() => setPlace(pl)}>{pl}</button>
-            ))}
+
+          {placeResults.length ? (
+            <div className="place-list">
+              {placeResults.map((pl, idx) => (
+                <button key={`${pl.name}-${idx}`} type="button" className="place-row" onClick={() => pickPlace(pl.name)}>
+                  <span className="place-ico"><Icon name="pin" /></span>
+                  <span className="grow">
+                    <b>{pl.name}</b>
+                    {pl.detail ? <small>{pl.detail}</small> : null}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          {recentPlaces.length ? (
+            <div className="smart-sub-block">
+              <h4>Gần đây</h4>
+              <div className="chips">
+                {recentPlaces.map((pl) => (
+                  <button key={pl} type="button" className="chip sm" onClick={() => pickPlace(pl)}>{pl}</button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="smart-sub-block">
+            <h4>Gợi ý nhanh</h4>
+            <div className="chips">
+              {QUICK_PLACES.map((pl) => (
+                <button key={pl} type="button" className="chip sm" onClick={() => pickPlace(pl)}>{pl}</button>
+              ))}
+            </div>
           </div>
-          <button type="button" className="btn btn-gold" style={{ marginTop: 14, width: '100%' }} disabled={!place.trim()}
-            onClick={() => applyWithColors({
-              key: 'location',
-              type: 'location',
-              text: place.trim(),
-              icon: { kind: 'symbol', value: 'location.fill', color: '#FFFFFFCC' },
-            })}>
-            Gắn vị trí
-          </button>
         </div>
       ) : null}
 
@@ -307,26 +490,52 @@ export function StylePicker({ onPick, current }) {
         <div className="smart-panel">
           <form className="search" onSubmit={(e) => { e.preventDefault(); if (city.trim()) fetchWeather({ q: city.trim() }); }}>
             <Icon name="cloud" />
-            <input type="search" placeholder="Nhập thành phố (Hà Nội, TP.HCM…)" value={city}
+            <input type="search" placeholder="Nhập thành phố (Hà Nội, TP.HCM, Đà Nẵng…)" value={city}
               onChange={(e) => setCity(e.target.value)} autoComplete="off" enterKeyHint="search" />
+            {city ? (
+              <button type="button" className="x" aria-label="Xóa" onClick={() => setCity('')}>
+                <Icon name="closeSm" />
+              </button>
+            ) : null}
             <button type="submit" className="btn btn-gold btn-sm" disabled={weatherBusy || !city.trim()}>
               {weatherBusy ? '…' : 'Xem'}
             </button>
           </form>
-          <button type="button" className="btn btn-dark btn-sm" style={{ marginTop: 10 }} disabled={weatherBusy} onClick={fetchGpsWeather}>
-            <Icon name="pin" /> Dùng vị trí hiện tại
-          </button>
+
+          <div className="smart-actions-row">
+            <button type="button" className="btn btn-dark btn-sm" disabled={weatherBusy} onClick={fetchGpsWeather}>
+              <Icon name="pin" /> {weatherBusy ? 'Đang tải…' : 'Dùng vị trí hiện tại'}
+            </button>
+          </div>
+
+          <div className="chips smart-quick">
+            {QUICK_CITIES.map((c) => (
+              <button key={c} type="button" className="chip sm" disabled={weatherBusy}
+                onClick={() => { setCity(c); fetchWeather({ q: c }); }}>{c}</button>
+            ))}
+          </div>
+
           {weatherRes ? (
             <div className="weather-card">
               <div className="weather-preview" style={colorPayload ? overlayStyle(colorPayload) : undefined}>
-                <SymbolIcon name={weatherRes.symbol} />
-                <span>{weatherRes.text}</span>
+                <span className="ico sym" style={{ color: iconColor }}><SymbolIcon name={weatherRes.symbol} /></span>
+                <span>{weatherDisplayText}</span>
+              </div>
+              {weatherRes.humidity != null || weatherRes.feelsLike != null ? (
+                <div className="weather-meta">
+                  {weatherRes.feelsLike != null ? <span>Cảm giác {weatherRes.feelsLike}°C</span> : null}
+                  {weatherRes.humidity != null ? <span>Độ ẩm {weatherRes.humidity}%</span> : null}
+                </div>
+              ) : null}
+              <div className="weather-modes">
+                <button type="button" className={`chip sm ${!weatherCompact ? 'on' : ''}`} onClick={() => setWeatherCompact(false)}>Đầy đủ</button>
+                <button type="button" className={`chip sm ${weatherCompact ? 'on' : ''}`} onClick={() => setWeatherCompact(true)}>Ngắn gọn</button>
               </div>
               <button type="button" className="btn btn-gold" style={{ marginTop: 12, width: '100%' }} onClick={() => applyWithColors({
                 key: 'weather',
                 type: 'weather',
-                text: weatherRes.text,
-                icon: { kind: 'symbol', value: weatherRes.symbol, color: '#FFFFFFCC' },
+                text: weatherDisplayText,
+                icon: { kind: 'symbol', value: weatherRes.symbol, color: iconColor },
                 overlayMeta: { weather: { symbol: weatherRes.symbol } },
               })}>
                 Gắn thời tiết này

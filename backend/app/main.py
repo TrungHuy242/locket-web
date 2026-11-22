@@ -31,10 +31,9 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from . import cache as disk_cache
-from . import captions, config, state_sync, video
+from . import captions, config, state_sync, tools, video
 from .providers.base import AuthExpired, Provider, ProviderError
 from .providers.live import LiveProvider
-from .providers.live_common import proxied
 from .sessions import store
 
 config.configure_logging()
@@ -834,6 +833,9 @@ async def media(request: Request, u: str = Query(max_length=2000), w: Optional[i
     if not content_type.startswith(("image/", "video/", "audio/")) or "svg" in content_type.lower():
         await upstream.aclose()
         raise HTTPException(status_code=415, detail="Định dạng media không được hỗ trợ.")
+    # iTunes audio previews often return audio/x-m4p (AAC-in-MP4), which Chrome/Firefox refuse unless normalized
+    if content_type.split(";")[0].strip().lower() in ("audio/x-m4p", "audio/x-m4a"):
+        content_type = "audio/mp4"
     out_headers = {"Cache-Control": MEDIA_CACHE_HEADER, "Accept-Ranges": "bytes"}
     for name in ("Content-Length", "Content-Range"):
         val = upstream.headers.get(name)
@@ -852,60 +854,10 @@ async def media(request: Request, u: str = Query(max_length=2000), w: Optional[i
 
 
 # --------------------------------------------------------------------------- smart tools & sync status
-_WMO_VI = {
-    0: ("Quang đãng", "sun.max.fill", "moon.fill"),
-    1: ("Ít mây", "cloud.sun.fill", "moon.stars.fill"),
-    2: ("Mây rải rác", "cloud.sun.fill", "cloud.fill"),
-    3: ("Nhiều mây", "cloud.fill", "cloud.fill"),
-    45: ("Sương mù", "cloud.fill", "cloud.fill"),
-    48: ("Sương mù", "cloud.fill", "cloud.fill"),
-    51: ("Mưa phùn", "cloud.rain.fill", "cloud.rain.fill"),
-    53: ("Mưa phùn", "cloud.rain.fill", "cloud.rain.fill"),
-    55: ("Mưa phùn", "cloud.rain.fill", "cloud.rain.fill"),
-    61: ("Mưa nhẹ", "cloud.rain.fill", "cloud.rain.fill"),
-    63: ("Có mưa", "cloud.rain.fill", "cloud.rain.fill"),
-    65: ("Mưa to", "cloud.rain.fill", "cloud.rain.fill"),
-    80: ("Mưa rào", "cloud.rain.fill", "cloud.rain.fill"),
-    81: ("Mưa rào", "cloud.rain.fill", "cloud.rain.fill"),
-    82: ("Mưa rào lớn", "cloud.rain.fill", "cloud.rain.fill"),
-    95: ("Giông bão", "cloud.bolt.fill", "cloud.bolt.fill"),
-    96: ("Giông bão", "cloud.bolt.fill", "cloud.bolt.fill"),
-    99: ("Giông bão", "cloud.bolt.fill", "cloud.bolt.fill"),
-}
-
-
 @app.get("/api/tools/music")
 async def search_music(q: str = Query(min_length=1, max_length=100), p: Provider = Depends(current)):
-    """Search songs via free iTunes Search API (no API key) for Music captions."""
-    client = _get_media_client()
-    try:
-        res = await client.get(
-            "https://itunes.apple.com/search",
-            params={"term": q.strip(), "media": "music", "entity": "song", "limit": 10, "country": "VN"},
-            timeout=10.0,
-        )
-        res.raise_for_status()
-        rows = res.json().get("results") or []
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Không tìm được bài hát lúc này.") from exc
-    tracks = []
-    for item in rows:
-        title = (item.get("trackName") or "").strip()
-        artist = (item.get("artistName") or "").strip()
-        if not title:
-            continue
-        artwork = (item.get("artworkUrl100") or item.get("artworkUrl60") or "").replace("100x100bb", "200x200bb")
-        preview = item.get("previewUrl") or ""
-        tracks.append({
-            "id": str(item.get("trackId") or f"{title}-{artist}"),
-            "title": title,
-            "artist": artist,
-            "artwork": artwork,
-            "artworkProxy": proxied(artwork) if artwork else None,
-            "previewUrl": preview,
-            "previewProxy": proxied(preview) if preview else None,
-            "appleMusicUrl": item.get("trackViewUrl") or "",
-        })
+    """Search songs via iTunes + Deezer fallback for Music captions."""
+    tracks = await tools.search_music(q)
     return {"tracks": tracks}
 
 
@@ -916,44 +868,31 @@ async def lookup_weather(
     lon: Optional[float] = Query(default=None, ge=-180, le=180),
     p: Provider = Depends(current),
 ):
-    """Fetch live weather via free Open-Meteo (city name or coordinates) for Weather captions."""
-    client = _get_media_client()
-    city = q.strip()
-    if lat is None or lon is None:
-        if not city:
-            raise HTTPException(status_code=422, detail="Nhập tên thành phố hoặc bật vị trí.")
-        try:
-            geo = await client.get(
-                "https://geocoding-api.open-meteo.com/v1/search",
-                params={"name": city, "count": 1, "language": "vi", "format": "json"},
-                timeout=10.0,
-            )
-            geo.raise_for_status()
-            places = geo.json().get("results") or []
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail="Không tra được địa điểm.") from exc
-        if not places:
-            raise HTTPException(status_code=404, detail=f"Không tìm thấy '{city}'.")
-        lat = float(places[0]["latitude"])
-        lon = float(places[0]["longitude"])
-        city = places[0].get("name") or city
+    """Fetch live weather via MET Norway -> Open-Meteo -> wttr.in with VN city lookup & GPS reverse-geocoding."""
     try:
-        fc = await client.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={"latitude": lat, "longitude": lon, "current": "temperature_2m,weather_code,is_day"},
-            timeout=10.0,
-        )
-        fc.raise_for_status()
-        cur = fc.json().get("current") or {}
+        return await tools.lookup_weather(q=q, lat=lat, lon=lon)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Không lấy được dữ liệu thời tiết.") from exc
-    temp = round(float(cur.get("temperature_2m", 0)))
-    code = int(cur.get("weather_code", 0))
-    is_day = int(cur.get("is_day", 1)) == 1
-    desc, day_sym, night_sym = _WMO_VI.get(code, ("Nhiều mây", "cloud.fill", "cloud.fill"))
-    sym = day_sym if is_day else night_sym
-    label = f"{temp}°C · {desc}" + (f" · {city}" if city else "")
-    return {"temp": temp, "desc": desc, "symbol": sym, "city": city, "text": label}
+        log.warning("Weather lookup failed (q=%r, lat=%r, lon=%r): %s", q, lat, lon, exc)
+        raise HTTPException(status_code=502, detail="Không lấy được dữ liệu thời tiết lúc này.") from exc
+
+
+@app.get("/api/tools/places")
+async def lookup_places(
+    q: str = Query(default="", max_length=100),
+    lat: Optional[float] = Query(default=None, ge=-90, le=90),
+    lon: Optional[float] = Query(default=None, ge=-180, le=180),
+    p: Provider = Depends(current),
+):
+    """Resolve GPS coordinates or search real Vietnamese/global places for Location captions."""
+    if lat is not None and lon is not None:
+        return await tools.reverse_geocode(lat, lon)
+    if not q.strip():
+        raise HTTPException(status_code=422, detail="Nhập tên địa điểm hoặc bật vị trí.")
+    return {"places": await tools.search_places(q)}
 
 
 @app.get("/api/sync/status")

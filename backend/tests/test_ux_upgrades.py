@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from backend.app import captions, main, state_sync
+from backend.app import captions, main, state_sync, tools
 from backend.app.providers.base import Provider
 from backend.app.providers.live import LiveProvider
 from backend.app.providers.live_common import parse_overlay
@@ -158,8 +158,23 @@ def test_memories_export_zip_tools_and_sync_endpoints(isolated_data, monkeypatch
             yield self._body
 
     class _FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
         def stream(self, method, url):
             return _FakeResp(200, {"content-type": "image/webp"}, b"RIFF1234WEBPVP8 data")
+
+        def build_request(self, method, url, headers=None):
+            return (method, url, headers)
+
+        async def send(self, req, stream=True):
+            class _AudioResp(_FakeResp):
+                async def aclose(self):
+                    return None
+            return _AudioResp(200, {"content-type": "audio/x-m4p", "Content-Length": "4"}, b"M4PD")
 
         async def get(self, url, params=None, timeout=10.0):
             if "itunes.apple.com" in url:
@@ -173,13 +188,37 @@ def test_memories_export_zip_tools_and_sync_endpoints(isolated_data, monkeypatch
                         "trackViewUrl": "https://music.apple.com/song/42",
                     }]
                 })
-            if "geocoding-api.open-meteo.com" in url:
-                return _FakeResp(200, json_data={"results": [{"name": "Hà Nội", "latitude": 21.02, "longitude": 105.83}]})
+            if "api.deezer.com" in url:
+                return _FakeResp(200, json_data={
+                    "data": [{
+                        "id": 99,
+                        "title_short": "Âm Thầm Bên Em",
+                        "artist": {"name": "Sơn Tùng M-TP"},
+                        "album": {"cover_medium": "https://cdn-images.dzcdn.net/cover.jpg"},
+                        "preview": "https://cdnt-preview.dzcdn.net/sample.mp3",
+                        "link": "https://www.deezer.com/track/99",
+                    }]
+                })
+            if "api.met.no" in url:
+                # Simulate MET Norway 500 to verify automatic fallback to Open-Meteo!
+                return _FakeResp(500, json_data={})
             if "api.open-meteo.com" in url:
-                return _FakeResp(200, json_data={"current": {"temperature_2m": 28.4, "weather_code": 0, "is_day": 1}})
+                return _FakeResp(200, json_data={
+                    "current": {"temperature_2m": 28.4, "apparent_temperature": 30.2, "relative_humidity_2m": 78, "weather_code": 0, "is_day": 1}
+                })
+            if "nominatim.openstreetmap.org/reverse" in url:
+                return _FakeResp(200, json_data={
+                    "address": {"road": "Đường Bạch Đằng", "city_district": "Quận Hải Châu", "city": "Thành phố Đà Nẵng"}
+                })
+            if "nominatim.openstreetmap.org/search" in url:
+                return _FakeResp(200, json_data=[
+                    {"name": "Cầu Rồng", "lat": "16.061", "lon": "108.227", "address": {"city": "Đà Nẵng", "country": "Việt Nam"}}
+                ])
             raise AssertionError(f"Unexpected URL {url}")
 
+    tools._CACHE.clear()
     monkeypatch.setattr(main, "_get_media_client", lambda: _FakeClient())
+    monkeypatch.setattr(tools, "_tools_client", lambda: _FakeClient())
     authed = TestClient(main.app, cookies={"lk_sid": "s" * 40})
     headers = {"X-Locket-Client": "web"}
 
@@ -193,20 +232,40 @@ def test_memories_export_zip_tools_and_sync_endpoints(isolated_data, monkeypatch
         assert len(names) == 1 and names[0].endswith("momA.webp")
         assert zf.read(names[0]) == b"RIFF1234WEBPVP8 data"
 
-    # Music search tool
+    # Media proxy normalizes Apple's audio/x-m4p into standard audio/mp4 for universal browser playback
+    r_aud = authed.get("/api/media", params={"u": "https://audio-ssl.itunes.apple.com/sample.m4a"})
+    assert r_aud.status_code == 200
+    assert r_aud.headers["content-type"] == "audio/mp4"
+
+    # Music search tool merges iTunes + Deezer fallback cleanly
     r_music = authed.get("/api/tools/music", params={"q": "blue"})
     assert r_music.status_code == 200
     tracks = r_music.json()["tracks"]
-    assert len(tracks) == 1
+    assert len(tracks) == 2
     assert tracks[0]["title"] == "Blue"
+    assert tracks[1]["title"] == "Âm Thầm Bên Em"
     assert tracks[0]["artworkProxy"].startswith("/api/media?u=")
     assert tracks[0]["previewProxy"].startswith("/api/media?u=")
 
-    # Weather tool
-    r_w = authed.get("/api/tools/weather", params={"q": "Ha Noi"})
+    # Weather tool resolves Vietnamese slang (TP.HCM) & falls back across providers + returns humidity & shortText
+    r_w = authed.get("/api/tools/weather", params={"q": "TP.HCM"})
     assert r_w.status_code == 200
     w = r_w.json()
-    assert w["temp"] == 28 and w["symbol"] == "sun.max.fill" and "Hà Nội" in w["text"]
+    assert w["temp"] == 28 and w["humidity"] == 78 and w["symbol"] == "sun.max.fill"
+    assert "Hồ Chí Minh" in w["text"] and "Hồ Chí Minh" in w["shortText"]
+
+    # GPS Weather automatically reverse-geocodes city name!
+    r_wgps = authed.get("/api/tools/weather", params={"lat": 16.0137, "lon": 108.2282})
+    assert r_wgps.status_code == 200
+    assert "Đà Nẵng" in r_wgps.json()["text"]
+
+    # Places tool: both GPS reverse-geocode & search work cleanly
+    r_pgps = authed.get("/api/tools/places", params={"lat": 16.0137, "lon": 108.2282})
+    assert r_pgps.status_code == 200
+    assert any("Hải Châu" in p["name"] for p in r_pgps.json()["places"])
+    r_pq = authed.get("/api/tools/places", params={"q": "Cầu Rồng"})
+    assert r_pq.status_code == 200
+    assert r_pq.json()["places"][0]["name"] == "Cầu Rồng"
 
     # Sync status + CSRF-protected sync now
     r_st = authed.get("/api/sync/status")

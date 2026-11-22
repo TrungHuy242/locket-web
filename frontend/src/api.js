@@ -144,6 +144,15 @@ export const api = {
     }
     return request('GET', `/api/tools/weather?${params}`);
   },
+  places: ({ q, lat, lon } = {}) => {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (typeof lat === 'number' && typeof lon === 'number') {
+      params.set('lat', String(lat));
+      params.set('lon', String(lon));
+    }
+    return request('GET', `/api/tools/places?${params}`);
+  },
   syncStatus: () => request('GET', '/api/sync/status'),
   syncNow: () => request('POST', '/api/sync/now'),
   postMoment: ({ image, video, caption, preset, overlayMeta, recipients, isPrivate = false, videoMirror = false, videoStart = 0, videoLength = 0, onProgress }) => {

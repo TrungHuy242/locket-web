@@ -102,7 +102,7 @@ MEDIA_HOST_ALLOWLIST = (
     "p.scdn.co",
     "audio-ssl.itunes.apple.com",
 )
-MEDIA_HOST_SUFFIX_ALLOWLIST = (".locketcamera.com", ".locket.cam", ".mzstatic.com")
+MEDIA_HOST_SUFFIX_ALLOWLIST = (".locketcamera.com", ".locket.cam", ".mzstatic.com", ".dzcdn.net")
 
 for _d in (DATA_DIR, SESSIONS_DIR, ACCOUNTS_DIR, THUMBS_DIR, VIDEO_CACHE_DIR):
     _d.mkdir(parents=True, exist_ok=True)

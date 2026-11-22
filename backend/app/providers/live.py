@@ -160,12 +160,13 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
             data = overlay.setdefault("data", {})
             bg = data.setdefault("background", {"material_blur": "regular", "colors": []})
 
+            icon_color = meta.get("textColor") or "#FFFFFFCC"
             if oid == "caption:time":
                 data["payload"] = {"date": time.time()}
-                data["icon"] = {"type": "sf_symbol", "data": "clock.fill", "color": "#FFFFFFCC"}
+                data["icon"] = {"type": "sf_symbol", "data": "clock.fill", "color": icon_color}
                 bg["material_blur"] = "regular"
                 bg.setdefault("colors", [])
-                data["text_color"] = "#FFFFFFE6"
+                data["text_color"] = meta.get("textColor") or "#FFFFFFE6"
                 overlay["alt_text"] = data.get("text") or ""
             elif oid == "caption:music":
                 music = meta.get("music") or {}
@@ -184,7 +185,7 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
                 if music.get("artwork"):
                     data["icon"] = {"type": "image", "data": music["artwork"]}
                 else:
-                    data["icon"] = {"type": "sf_symbol", "data": "music.note", "color": "#FFFFFFCC"}
+                    data["icon"] = {"type": "sf_symbol", "data": "music.note", "color": icon_color}
                 overlay["alt_text"] = data.get("text") or title
             elif oid == "caption:review":
                 rating = meta.get("rating")
@@ -195,12 +196,12 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
                 overlay["alt_text"] = f"★ {rating} {data.get('text') or ''}".strip() if rating else (data.get("text") or "")
             elif oid == "caption:location":
                 data["type"] = "location"
-                data["icon"] = {"type": "sf_symbol", "data": "location.fill", "color": "#FFFFFFCC"}
+                data["icon"] = {"type": "sf_symbol", "data": "location.fill", "color": icon_color}
                 overlay["alt_text"] = data.get("text") or ""
             elif oid == "caption:weather":
                 sym = (meta.get("weather") or {}).get("symbol") or "sun.max.fill"
                 data["type"] = "weather"
-                data["icon"] = {"type": "sf_symbol", "data": sym, "color": "#FFFFFFCC"}
+                data["icon"] = {"type": "sf_symbol", "data": sym, "color": icon_color}
                 overlay["alt_text"] = data.get("text") or ""
 
             if meta.get("colors"):

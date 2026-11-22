@@ -91,7 +91,7 @@ def sanitize_overlay_meta(raw: Optional[dict]) -> Optional[dict]:
                 m["artwork"] = artwork
             if preview and _host_ok(preview):
                 m["previewUrl"] = preview
-            if link.startswith(("https://music.apple.com/", "https://open.spotify.com/")):
+            if link.startswith(("https://music.apple.com/", "https://open.spotify.com/", "https://www.deezer.com/")):
                 m["link"] = link[:500]
             out["music"] = m
 

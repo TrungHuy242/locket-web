@@ -227,9 +227,9 @@
 
 /* caption kinds */
 .caption-pill .txt { -webkit-line-clamp: var(--lines, 4); }
-.caption-pill .ico.sym { display: grid; place-items: center; }
+.caption-pill .ico.sym, .caption-edit .ico.sym { display: grid; place-items: center; }
 .caption-pill .ico.art, .caption-edit .ico.art { width: 26px; height: 26px; border-radius: 7px; object-fit: cover; margin: -2px 0 -2px -5px; }
-.caption-pill .rate { flex: none; color: var(--gold); }
+.caption-pill .rate, .caption-edit .rate { flex: none; color: var(--gold); }
 button.caption-pill { font: inherit; font-size: 16px; font-weight: 800; cursor: pointer; }
 .caption-pill.music { text-align: left; }
 .caption-pill .eq { flex: none; display: flex; align-items: flex-end; gap: 2px; height: 14px; margin-left: 2px; }
@@ -325,6 +325,8 @@ button.caption-pill { font: inherit; font-size: 16px; font-weight: 800; cursor: 
 @keyframes spin-refresh { to { transform: rotate(360deg); } }
 
 /* smart caption picker */
+.styles-head { position: relative; display: flex; align-items: center; justify-content: center; }
+.styles-head .link-btn { position: absolute; right: 4px; font-size: 13px; color: var(--danger); }
 .smart-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 10px 0 4px; scrollbar-width: none; }
 .smart-tabs::-webkit-scrollbar { display: none; }
 .smart-tabs .chip { flex: none; min-height: 34px; padding: 5px 12px; font-size: 14px; color: var(--label-2); }
@@ -339,17 +341,23 @@ button.caption-pill { font: inherit; font-size: 16px; font-weight: 800; cursor: 
 }
 .color-dot.on { transform: scale(1.1); box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--gold); }
 .smart-panel { margin-top: 12px; }
+.smart-actions-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.smart-quick { margin-top: 10px; }
+.smart-sub-block { margin-top: 14px; }
+.smart-sub-block h4 { margin: 0 0 8px; font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); }
 .smart-hint { margin-top: 14px; color: var(--muted); font-size: 14px; font-weight: 600; line-height: 1.45; text-align: center; }
-.music-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
-.music-row {
+.music-list, .place-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.music-row, .place-row {
   display: flex; align-items: center; gap: 11px; padding: 8px 10px; border-radius: 16px;
-  background: var(--surface); cursor: pointer; transition: background .16s;
+  background: var(--surface); cursor: pointer; transition: background .16s; text-align: left; width: 100%;
 }
-.music-row:hover { background: var(--surface-2); }
+.music-row:hover, .place-row:hover { background: var(--surface-2); }
 .music-row img, .music-ph { width: 46px; height: 46px; border-radius: 11px; object-fit: cover; flex: none; background: var(--surface-2); display: grid; place-items: center; }
-.music-row .grow { flex: 1; min-width: 0; }
-.music-row b { display: block; font-size: 15px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.music-row small { display: block; font-size: 13px; color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.place-ico { width: 36px; height: 36px; border-radius: 11px; flex: none; background: var(--surface-2); color: var(--gold); display: grid; place-items: center; }
+.place-ico svg { width: 18px; height: 18px; }
+.music-row .grow, .place-row .grow { flex: 1; min-width: 0; }
+.music-row b, .place-row b { display: block; font-size: 15px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--label); }
+.music-row small, .place-row small { display: block; font-size: 13px; color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .music-row .icon-btn.on { color: var(--gold); }
 .star-row { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 0; }
 .star-btn { font-size: 36px; line-height: 1; color: var(--surface-3); transition: transform .16s var(--ease-ios), color .16s; cursor: pointer; }
@@ -361,6 +369,10 @@ button.caption-pill { font: inherit; font-size: 16px; font-weight: 800; cursor: 
   display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: 20px;
   background: rgba(58, 58, 60, .82); color: #fff; font-size: 16px; font-weight: 800;
 }
+.weather-preview .ico.sym { display: grid; place-items: center; }
+.weather-meta { display: flex; gap: 14px; margin-top: 8px; font-size: 12.5px; font-weight: 700; color: var(--muted); }
+.weather-modes { display: flex; gap: 8px; margin-top: 10px; }
+.weather-modes .chip.on { background: var(--chip-on); color: var(--chip-on-text); }
 
 /* crop sheet */
 .crop-sheet { display: flex; flex-direction: column; align-items: center; }
