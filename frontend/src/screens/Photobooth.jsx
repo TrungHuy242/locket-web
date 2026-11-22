@@ -3,6 +3,7 @@
 // live Locket caption-safe preview, and animated video clip export.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { loadStyle, saveStyle } from '../lib/boothConfig.js';
 import { Icon } from '../lib/icons.jsx';
 import { downloadBlob } from '../lib/format.js';
 import { FILTERS, filteredCanvas } from '../lib/filters.js';
@@ -21,7 +22,6 @@ import { Button } from '../ui/kit.jsx';
 import { StickerLayer } from './booth/StickerLayer.jsx';
 import { CellAdjustBar } from './booth/CellAdjustBar.jsx';
 
-const OPTS_KEY = 'locket.booth.style.v3';
 const SWATCHES = ['#ffffff', '#111111', '#fff3df', '#ffe6ee', '#e8f7ee', '#d8ecff', '#e6dcff', '#fff8d8', '#e9d9bd', '#1d2547', '#ffd1dc', '#c7d2ff'];
 const INKS = ['#1c1c1e', '#ffffff', '#8a5a3b', '#d0587e', '#3f8a64', '#5a7fbf', '#5b3fd1', '#e2557a', '#c8325a', '#ff9f43', '#7a4f32', '#ffe8a3'];
 const TEXT_BGS = ['none', 'rgba(0,0,0,0.62)', 'rgba(255,255,255,0.88)', '#ffc629', '#ff6b9d', '#7c5cff'];
@@ -36,17 +36,6 @@ const TABS = [
 const PREVIEW_CELL = 340;
 const MAX_HISTORY = 25;
 
-export function loadStyle(defaults) {
-  try {
-    const raw = JSON.parse(localStorage.getItem(OPTS_KEY) || '{}');
-    return { ...defaults, ...raw, adjust: { ...defaults.adjust, ...(raw.adjust || {}) } };
-  } catch {
-    return defaults;
-  }
-}
-export function saveStyle(opts) {
-  try { localStorage.setItem(OPTS_KEY, JSON.stringify(opts)); } catch { /* private mode */ }
-}
 const newId = () => `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
@@ -64,6 +53,8 @@ async function fileToBoothShot(file) {
     bitmap.close?.();
   }
 }
+
+export { loadStyle };
 
 export function PhotoboothEditor({
   shots,

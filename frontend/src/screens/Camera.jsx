@@ -2,7 +2,7 @@
 // videos from the device library (long clips get a 10-second trim window), preview with sound, caption
 // style and recipients, then posting to Locket. Sizes match what the iPhone app stores: photos 1020x1020,
 // clips 1080x1080 (the server encodes the final WebP / MP4 once, at high quality).
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { Icon } from '../lib/icons.jsx';
 import { clock, downloadBlob, thumb, vibrate, wait } from '../lib/format.js';
@@ -12,14 +12,17 @@ import { ui } from '../ui/overlays.jsx';
 import { Spinner } from '../ui/kit.jsx';
 import { ErrorBoundary } from '../components/AppStatus.jsx';
 import { FILTERS, FilterRenderer, centerCrop, filteredCanvas, webglSupported } from '../lib/filters.js';
-import { ASPECTS, defaultOptions, isSquareNative } from '../lib/photobooth.js';
+import { ASPECTS, defaultOptions, isSquareNative, loadStyle } from '../lib/boothConfig.js';
 import { playBeep, playShutter } from '../lib/boothAudio.js';
 import {
   BOOTH_KEY, BOOTH_SIZE, CANVAS_RECORDING, CLIP_S, HOLD_MS, MAX_FILE_BYTES, MAX_RECORD_MS,
   PHOTO_SIZE, RING, SELF, VIDEO_BITRATE, VIDEO_SIZE,
   drawSquare, openClip, pickMime, readJSON, stillAt, toBlob,
 } from '../lib/cameraMedia.js';
-import { PhotoboothEditor, loadStyle } from './Photobooth.jsx';
+// the editor and its renderer (templates, stickers, export) are a separate chunk: loaded when a
+// photobooth is opened, prefetched as soon as the PHOTOBOOTH mode is picked
+const loadBoothEditor = () => import('./Photobooth.jsx');
+const PhotoboothEditor = lazy(() => loadBoothEditor().then((m) => ({ default: m.PhotoboothEditor })));
 import { StylePicker } from './camera/StylePicker.jsx';
 import { CropSheet } from './camera/CropSheet.jsx';
 import { BoothOverlays, CaptionEditor, FilterTray, PreviewLayers, RecipientsBar } from './camera/CameraOverlays.jsx';
@@ -1062,7 +1065,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
 
       <div className="cam-modes" data-when="capture" role="tablist" aria-label="Chế độ chụp">
         <button type="button" role="tab" aria-selected={mode === 'photo'} className={mode === 'photo' ? 'on' : ''} disabled={!!run} onClick={() => setMode('photo')}>ẢNH</button>
-        <button type="button" role="tab" aria-selected={mode === 'booth'} className={mode === 'booth' ? 'on' : ''} disabled={!!run} onClick={() => setMode('booth')}>PHOTOBOOTH</button>
+        <button type="button" role="tab" aria-selected={mode === 'booth'} className={mode === 'booth' ? 'on' : ''} disabled={!!run} onClick={() => { setMode('booth'); loadBoothEditor().catch(() => {}); }}>PHOTOBOOTH</button>
       </div>
       <div className="cam-controls" data-when="capture">
         <button type="button" className="cam-side" aria-label={mode === 'booth' ? 'Chọn 2–6 ảnh ghép Photobooth' : 'Chọn ảnh hoặc video từ thư viện'}
@@ -1104,11 +1107,13 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
       <input ref={boothFileRef} type="file" accept="image/*" multiple hidden onChange={onBoothFiles} />
       {editor && boothShots ? (
         <ErrorBoundary inline title="Không mở được trình chỉnh sửa Photobooth" onClose={() => setEditor(false)}>
+          <Suspense fallback={<div className="booth-editor force-dark in booth-loading-screen"><Spinner size="lg" /></div>}>
           <PhotoboothEditor shots={boothShots} takenAt={boothRef.current.takenAt}
             initialFilter={boothLook?.filter ?? filterId} initialAmount={boothLook?.amount ?? filterAmount}
             options={boothStyle} onOptions={setBoothStyle} onShots={setBoothShots} onLook={onBoothLook}
             onRetake={onBoothRetake} onDiscard={() => { setBoothShots(null); setBoothLook(null); }}
             onClose={() => setEditor(false)} onPost={onBoothPost} />
+          </Suspense>
         </ErrorBoundary>
       ) : null}
     </section>

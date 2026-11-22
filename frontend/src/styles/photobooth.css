@@ -251,3 +251,6 @@
 .booth-tab > * { flex-shrink: 0; }
 .stk-pick, .tpl { min-width: 0; }
 .stk-pick img { min-width: 0; min-height: 0; }
+
+/* shown for the moment it takes to load the editor chunk (normally already prefetched) */
+.booth-loading-screen { display: grid; place-items: center; }
