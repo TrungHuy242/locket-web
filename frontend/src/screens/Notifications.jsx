@@ -103,9 +103,9 @@ export function Notifications({ view }) {
   const refresh = useCallback((force = false) => loadNotifications({ refresh: force }), []);
 
   useEffect(() => {
-    refresh(!appStore.get().notifications);
-    const poll = setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
-    const onShow = () => { if (!document.hidden) refresh(); };
+    refresh(false);
+    const poll = setInterval(() => { if (!document.hidden) refresh(false); }, POLL_MS);
+    const onShow = () => { if (!document.hidden) refresh(false); };
     document.addEventListener('visibilitychange', onShow);
     return () => { clearInterval(poll); document.removeEventListener('visibilitychange', onShow); };
   }, [refresh]);
@@ -157,6 +157,7 @@ export function Notifications({ view }) {
   };
 
   const unread = data?.unread || 0;
+  const loading = !data || (data.loading && !list.length);
   const readAll = () => { if (unread) markNotificationsRead(null, true); };
 
   return (
@@ -177,9 +178,9 @@ export function Notifications({ view }) {
 
         {data?.warnings?.length ? <div className="nt-warn">{data.warnings.map((w) => <p key={w}>{w}</p>)}</div> : null}
 
-        {!data && !error ? <SkeletonList rows={8} avatar={48} thumb /> : null}
+        {loading && !error ? <SkeletonList rows={8} avatar={48} thumb /> : null}
         {!data && error ? <StateView icon="bell" tone="error" title="Không tải được thông báo" text={error} action="Thử lại" onAction={() => refresh(true)} /> : null}
-        {data && !shown.length ? (
+        {!loading && !shown.length ? (
           <div className="empty nt-empty"><span className="nt-empty-ic"><Icon name="bell" /></span>
             <b>{filter === 'all' ? 'Chưa có thông báo nào' : 'Không có thông báo loại này'}</b>
             <p>Cảm xúc, câu trả lời, tin nhắn và lời mời kết bạn trong {data.windowDays} ngày gần nhất sẽ hiện ở đây.</p></div>
@@ -194,7 +195,7 @@ export function Notifications({ view }) {
           </section>
         ))}
 
-        {data ? (
+        {data && !data.loading && data.updatedAt ? (
           <p className="nt-note">
             Locket không có hộp thư thông báo riêng. Danh sách được ghép từ dữ liệu thật trong {data.windowDays} ngày,
             cập nhật lúc {fullDate(data.updatedAt).split(' · ')[0]}. Tin nhắn và câu trả lời đã đọc trong ứng dụng Locket

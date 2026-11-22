@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.util
 import io
 import json
 import logging
@@ -10,15 +11,17 @@ import os
 import tempfile
 import threading
 import time
+import weakref
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-import requests
+import httpx
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
@@ -34,16 +37,64 @@ config.configure_logging()
 log = logging.getLogger(__name__)
 
 
+def _has_h2() -> bool:
+    return importlib.util.find_spec("h2") is not None
+
+
+_HTTP2 = _has_h2()
+_media_clients: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_thumb_sems: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_thumb_locks: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _get_media_client() -> httpx.AsyncClient:
+    """Shared async HTTP/2 keep-alive client per event loop for streaming Locket media."""
+    loop = asyncio.get_running_loop()
+    client = _media_clients.get(loop)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
+            http2=_HTTP2,
+            follow_redirects=False,
+            timeout=httpx.Timeout(20.0, connect=10.0),
+            limits=httpx.Limits(max_connections=40, max_keepalive_connections=20),
+        )
+        _media_clients[loop] = client
+    return client
+
+
+async def _close_media_client() -> None:
+    loop = asyncio.get_running_loop()
+    client = _media_clients.pop(loop, None)
+    if client is not None and not client.is_closed:
+        await client.aclose()
+
+
+class _SelectiveGZipMiddleware:
+    """Compress JSON/text responses while skipping binary media proxy streams."""
+
+    def __init__(self, app, minimum_size: int = 500):
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "") != "/api/media":
+            await self.gzip(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     await run_in_threadpool(state_sync.start)
     try:
         yield
     finally:
+        await _close_media_client()
         await run_in_threadpool(state_sync.stop)
 
 
 app = FastAPI(title="Locket Web", docs_url=None, redoc_url=None, openapi_url=None, lifespan=_lifespan)
+app.add_middleware(_SelectiveGZipMiddleware, minimum_size=500)
 
 
 # --------------------------------------------------------------------------- plumbing
@@ -575,76 +626,119 @@ def _host_allowed(host: str) -> bool:
 
 
 THUMB_WIDTHS = (128, 360)
+THUMB_CACHE_HEADER = "private, max-age=2592000, immutable"
+MEDIA_CACHE_HEADER = "private, max-age=2592000, immutable"
 
 
-def _thumbnail(url: str, width: int) -> Response:
-    """Downscaled copy for grids and avatars, cached on disk so each image is fetched from Locket once."""
-    cache = config.THUMBS_DIR / f"{hashlib.sha256(url.encode()).hexdigest()[:40]}_{width}.webp"
-    if not cache.exists():
-        try:
-            with requests.get(url, timeout=20, allow_redirects=False, stream=True) as upstream:
-                if upstream.status_code != 200 or not upstream.headers.get("Content-Type", "").startswith("image/"):
-                    raise HTTPException(status_code=404, detail="Không tải được media.")
-                raw = upstream.raw.read(config.MAX_IMAGE_BYTES + 1, decode_content=True)
-        except requests.RequestException as exc:
-            raise HTTPException(status_code=502, detail="Không tải được media.") from exc
-        if len(raw) > config.MAX_IMAGE_BYTES:
-            raise HTTPException(status_code=413, detail="Ảnh quá lớn.")
-        tmp = cache.with_suffix(".tmp%d" % (time.time_ns() % 100000))
-        try:
-            img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
-            img.thumbnail((width, width))
-            img.save(tmp, "WEBP", quality=80)
-            tmp.replace(cache)
-            disk_cache.schedule_prune(config.THUMBS_DIR, config.THUMBS_MAX_BYTES)
-        except HTTPException:
-            tmp.unlink(missing_ok=True)
-            raise
-        except Exception as exc:
-            tmp.unlink(missing_ok=True)
-            raise HTTPException(status_code=415, detail="Định dạng ảnh không được hỗ trợ.") from exc
-    else:
+def _encode_thumb(raw: bytes, width: int, cache: Path) -> bytes:
+    """Decode and save a fast-encoded WebP thumbnail (method=0 is ~6-8x faster on shared vCPUs)."""
+    tmp = cache.with_suffix(".tmp%d" % (time.time_ns() % 100000))
+    try:
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(raw))).convert("RGB")
+        img.thumbnail((width, width), Image.Resampling.BILINEAR)
+        img.save(tmp, "WEBP", quality=78, method=0)
+        tmp.replace(cache)
+        disk_cache.schedule_prune(config.THUMBS_DIR, config.THUMBS_MAX_BYTES)
+        return cache.read_bytes()
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=415, detail="Định dạng ảnh không được hỗ trợ.") from exc
+
+
+async def _thumbnail(url: str, width: int) -> Response:
+    """Downscaled copy for grids and avatars, cached on disk with per-key dedupe and CPU throttling."""
+    key = f"{hashlib.sha256(url.encode()).hexdigest()[:40]}_{width}"
+    cache = config.THUMBS_DIR / f"{key}.webp"
+    if cache.exists():
         disk_cache.touch_if_old(cache)
-    return Response(cache.read_bytes(), media_type="image/webp", headers={"Cache-Control": "private, max-age=604800"})
+        data = await run_in_threadpool(cache.read_bytes)
+        return Response(data, media_type="image/webp", headers={"Cache-Control": THUMB_CACHE_HEADER})
+
+    loop = asyncio.get_running_loop()
+    locks = _thumb_locks.setdefault(loop, {})
+    slot = locks.get(key)
+    if slot is None:
+        slot = [asyncio.Lock(), 0]
+        locks[key] = slot
+    slot[1] += 1
+    try:
+        async with slot[0]:
+            if cache.exists():
+                disk_cache.touch_if_old(cache)
+                data = await run_in_threadpool(cache.read_bytes)
+                return Response(data, media_type="image/webp", headers={"Cache-Control": THUMB_CACHE_HEADER})
+
+            client = _get_media_client()
+            try:
+                async with client.stream("GET", url) as upstream:
+                    if upstream.status_code != 200 or not upstream.headers.get("content-type", "").startswith("image/"):
+                        raise HTTPException(status_code=404, detail="Không tải được media.")
+                    if "svg" in upstream.headers.get("content-type", "").lower():
+                        raise HTTPException(status_code=415, detail="Định dạng ảnh không được hỗ trợ.")
+                    buf = bytearray()
+                    async for chunk in upstream.aiter_bytes(64 * 1024):
+                        buf.extend(chunk)
+                        if len(buf) > config.MAX_IMAGE_BYTES:
+                            raise HTTPException(status_code=413, detail="Ảnh quá lớn.")
+                    raw = bytes(buf)
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail="Không tải được media.") from exc
+
+            sem = _thumb_sems.get(loop)
+            if sem is None:
+                sem = asyncio.Semaphore(2)
+                _thumb_sems[loop] = sem
+            async with sem:
+                data = await run_in_threadpool(_encode_thumb, raw, width, cache)
+            return Response(data, media_type="image/webp", headers={"Cache-Control": THUMB_CACHE_HEADER})
+    finally:
+        slot[1] -= 1
+        if slot[1] <= 0 and locks.get(key) is slot:
+            locks.pop(key, None)
 
 
 @app.get("/api/media")
-def media(request: Request, u: str = Query(max_length=2000), w: Optional[int] = Query(default=None),
-          v: Optional[str] = Query(default=None, max_length=8), p: Provider = Depends(current)):
-    """Streams Locket media through the server so tokenized storage URLs stay out of page markup."""
+async def media(request: Request, u: str = Query(max_length=2000), w: Optional[int] = Query(default=None),
+                v: Optional[str] = Query(default=None, max_length=8), p: Provider = Depends(current)):
+    """Streams Locket media asynchronously through an HTTP/2 keep-alive pool."""
     parsed = urlparse(u)
     if parsed.scheme != "https" or not _host_allowed(parsed.hostname or "") or parsed.port not in (None, 443):
         raise HTTPException(status_code=400, detail="Nguồn media không được phép.")
     if w in THUMB_WIDTHS:
-        return _thumbnail(u, w)
+        return await _thumbnail(u, w)
     if v == "h264":
         # Locket clips are HEVC; this serves a cached H.264 copy (FileResponse handles Range requests)
-        return FileResponse(video.h264_copy(u), media_type="video/mp4",
-                            headers={"Cache-Control": "private, max-age=604800"})
+        path = await run_in_threadpool(video.h264_copy, u)
+        return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": THUMB_CACHE_HEADER})
     headers = {}
     if request.headers.get("range"):
         headers["Range"] = request.headers["range"]
+    client = _get_media_client()
     try:
-        upstream = requests.get(u, headers=headers, stream=True, timeout=20, allow_redirects=False)
-    except requests.RequestException as exc:
+        req = client.build_request("GET", u, headers=headers)
+        upstream = await client.send(req, stream=True)
+    except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail="Không tải được media.") from exc
     if upstream.status_code not in (200, 206):
-        upstream.close()
+        await upstream.aclose()
         raise HTTPException(status_code=404, detail="Không tải được media.")
-    content_type = upstream.headers.get("Content-Type", "application/octet-stream")
+    content_type = upstream.headers.get("content-type", "application/octet-stream")
     # SVG can carry script and would be served from this origin: never proxy it
     if not content_type.startswith(("image/", "video/", "audio/")) or "svg" in content_type.lower():
-        upstream.close()
+        await upstream.aclose()
         raise HTTPException(status_code=415, detail="Định dạng media không được hỗ trợ.")
-    out_headers = {"Cache-Control": "private, max-age=86400", "Accept-Ranges": "bytes"}
+    out_headers = {"Cache-Control": MEDIA_CACHE_HEADER, "Accept-Ranges": "bytes"}
     for name in ("Content-Length", "Content-Range"):
-        if upstream.headers.get(name):
-            out_headers[name] = upstream.headers[name]
-    def _stream():
+        val = upstream.headers.get(name)
+        if val:
+            out_headers[name] = val
+
+    async def _stream():
         try:
-            yield from upstream.iter_content(64 * 1024)
+            async for chunk in upstream.aiter_bytes(64 * 1024):
+                yield chunk
         finally:
-            upstream.close()
+            await upstream.aclose()
 
     return StreamingResponse(_stream(), status_code=upstream.status_code,
                              media_type=content_type, headers=out_headers)

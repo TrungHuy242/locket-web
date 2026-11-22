@@ -214,6 +214,9 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   /* ------------------------------------------------ live filter preview */
   useEffect(() => { try { localStorage.setItem('locket.filter', filterId); localStorage.setItem('locket.filterAmount', String(filterAmount)); } catch { /* ignore */ } }, [filterId, filterAmount]);
   useEffect(() => () => { rendererRef.current?.dispose(); rendererRef.current = null; }, []);
+  const trayGenRef = useRef(0);
+  useEffect(() => () => { trayGenRef.current += 1; }, []);
+
   useEffect(() => {
     if (!glActive || !active || preview || editor) return undefined;
     const canvas = glRef.current;
@@ -233,34 +236,78 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     }
     const r = rendererRef.current;
     const t0 = performance.now();
+    let alive = true;
     let raf = 0;
-    const loop = () => {
-      raf = requestAnimationFrame(loop);
+    let vfc = 0;
+    let vfcVideo = null;
+    let lastDraw = 0;
+
+    const draw = (now) => {
       const v = videoRef.current;
       if (!v || v.readyState < 2 || !v.videoWidth) return;
-      const size = Math.min(1080, Math.round((canvas.clientWidth || 360) * Math.min(window.devicePixelRatio || 1, 2)));
+      // Cap live preview at 720px for smooth GPU frame times (photos & clips still export full 1020/1080)
+      const size = Math.min(720, Math.round((canvas.clientWidth || 360) * Math.min(window.devicePixelRatio || 1, 2)));
       const look = filterRef.current;
-      if (!r.render(v, { filter: look.id, amount: look.amount, crop: centerCrop(v.videoWidth, v.videoHeight, 1, 1), width: size, height: size, time: (performance.now() - t0) / 1000 })) {
+      if (!r.render(v, { filter: look.id, amount: look.amount, crop: centerCrop(v.videoWidth, v.videoHeight, 1, 1), width: size, height: size, time: (now - t0) / 1000 })) {
         setGlLost(true);
       }
     };
-    loop();
-    return () => cancelAnimationFrame(raf);
+
+    const scheduleVfc = (v) => {
+      vfcVideo = v;
+      vfc = v.requestVideoFrameCallback((now) => {
+        if (!alive) return;
+        draw(now);
+        scheduleVfc(v);
+      });
+    };
+
+    const loop = (now) => {
+      if (!alive) return;
+      const v = videoRef.current;
+      if (v && typeof v.requestVideoFrameCallback === 'function' && v.readyState >= 2) {
+        draw(now);
+        scheduleVfc(v);
+        return;
+      }
+      raf = requestAnimationFrame(loop);
+      if (now - lastDraw < 32) return;
+      lastDraw = now;
+      draw(now);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+      if (vfc && vfcVideo?.cancelVideoFrameCallback) vfcVideo.cancelVideoFrameCallback(vfc);
+    };
   }, [glActive, active, preview, editor]);
 
-  // filter tray thumbnails: every filter applied to the current camera frame
+  // filter tray thumbnails: freeze one 84x84 snapshot and render batches of 4 per frame to avoid jank
   const openTray = () => {
     if (!glOk) { ui.warning('Trình duyệt này không hỗ trợ WebGL nên chưa dùng được bộ lọc'); return; }
+    const willOpen = !trayOpen;
+    setTrayOpen(willOpen);
+    const gen = ++trayGenRef.current;
+    if (!willOpen) return;
     const v = videoRef.current;
-    if (v?.videoWidth) {
-      const crop = centerCrop(v.videoWidth, v.videoHeight, 1, 1);
-      const next = {};
-      FILTERS.forEach((f) => {
-        try { next[f.id] = filteredCanvas(v, { filter: f.id, amount: 1, width: 84, height: 84, crop, mirror: mirrorRef.current }).toDataURL('image/jpeg', 0.7); } catch { /* skip */ }
-      });
-      setThumbs(next);
-    }
-    setTrayOpen((o) => !o);
+    if (!v?.videoWidth) return;
+    const snap = document.createElement('canvas');
+    snap.width = snap.height = 84;
+    drawSquare(snap.getContext('2d'), v, v.videoWidth, v.videoHeight, 84, { mirror: mirrorRef.current });
+    let i = 0;
+    const step = () => {
+      if (trayGenRef.current !== gen) return;
+      const batch = {};
+      const end = Math.min(i + 4, FILTERS.length);
+      for (; i < end; i += 1) {
+        const f = FILTERS[i];
+        try { batch[f.id] = filteredCanvas(snap, { filter: f.id, amount: 1, width: 84, height: 84 }).toDataURL('image/jpeg', 0.7); } catch { /* skip */ }
+      }
+      setThumbs((prev) => ({ ...prev, ...batch }));
+      if (i < FILTERS.length) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
   };
 
   /* ------------------------------------------------ photobooth */

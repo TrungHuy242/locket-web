@@ -53,8 +53,22 @@ git push -u origin main
 
 ---
 
+## Bước 4: Chống ngủ 24/7 miễn phí (cron-job.org)
+
+Render Free tặng **750 giờ/tháng** (trong khi 1 tháng 31 ngày chỉ có **744 giờ** → đủ chạy 24/7 cho đúng 1 Web Service). Để server không bị đóng ngủ sau 15 phút và giữ ấm cache ảnh/RAM:
+
+1. Đăng ký tài khoản miễn phí tại https://console.cron-job.org (không cần thẻ tín dụng).
+2. Chọn **Create cronjob**:
+   - **Title**: `Locket Web Keep-Alive`
+   - **URL**: `https://<ten-service>.onrender.com/api/health`
+   - **Execution schedule**: chọn **Every 10 minutes** (hoặc **Every 12 minutes**)
+   - **Request method**: `GET` (mặc định)
+3. Bấm **Create** → xong! Render sẽ nhận ping nhẹ `/api/health` (`{"ok":true}`) đều đặn, không còn cảnh chờ 30–50s cold-start nữa.
+
+---
+
 ## Lưu ý khi dùng Render Free
 
-- **Ngủ sau 15 phút không ai vào**: Lần mở lại đầu tiên sẽ chờ khoảng **30–50 giây** để container tỉnh dậy và kéo lại phiên đăng nhập từ Private HF Dataset (bạn không bị đăng xuất và không mất lịch sử).
+- **Giới hạn 750 giờ/tháng**: nếu bạn chỉ chạy 1 Web Service này trên tài khoản Render, bật cron-job.org 24/7 vẫn nằm gọn trong hạn mức miễn phí (744h ≤ 750h). Nếu chạy 2 Web Service cùng lúc, nên giới hạn lịch ping chỉ chạy ban ngày (ví dụ 6h–24h).
 - **RAM 512 MB**: `render.yaml` đã đặt sẵn `LOCKET_FFMPEG_THREADS=1` và stream upload video ra đĩa để hạn chế tốn RAM tối đa khi chuyển mã video. Nếu đăng video dung lượng quá nặng (ví dụ 4K dài từ thư viện), nên chọn clip gọn để tránh vượt 512 MB RAM.
 - **Cập nhật code sau này**: chỉ cần `git add . && git commit -m "Update" && git push`, Render sẽ tự build và deploy bản mới.

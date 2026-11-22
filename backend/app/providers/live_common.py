@@ -11,7 +11,7 @@ FIRESTORE = "https://firestore.googleapis.com/v1/projects/locket-4252a/databases
 STORAGE = "https://firebasestorage.googleapis.com/v0/b"
 # a moment's video and thumbnail share one file name: thumbnails/<id>.webp <-> videos/<id>.mp4
 THUMB_NAME = re.compile(r"^(users/[A-Za-z0-9]+/moments)/thumbnails/([^/]+)\.[A-Za-z0-9]+$")
-PROFILE_TTL = 600
+PROFILE_TTL = 3600
 OWNER_IN_URL = re.compile(r"users(?:%2F|/)([A-Za-z0-9]+)(?:%2F|/)moments")
 
 LABELS = {"reactions": "cảm xúc trên khoảnh khắc", "messages": "tin nhắn", "friends": "bạn bè"}

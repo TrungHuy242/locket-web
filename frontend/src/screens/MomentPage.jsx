@@ -66,7 +66,7 @@ export const MomentPage = memo(function MomentPage({ moment: m, active, playingM
   return (
     <section className="page page-moment" data-id={m.id}>
       <div className="moment-media">
-        <img src={m.image} alt={m.caption || `Khoảnh khắc của ${m.user.name}`} loading="lazy" decoding="async" draggable="false" />
+        <img src={m.image} alt={m.caption || `Khoảnh khắc của ${m.user.name}`} loading={active ? 'eager' : 'lazy'} decoding="async" draggable="false" />
         {m.video && active ? <MomentVideo src={m.video} poster={m.image} /> : null}
         {m.video && !active ? <span className="vbadge"><Icon name="play" /><b>Video</b></span> : null}
         <CaptionPill overlay={m.overlay} playing={playingMusic} onPlay={(url) => onMusic(m.id, url)} />

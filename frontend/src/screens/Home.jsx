@@ -1,6 +1,6 @@
 // Home: one vertical pager (camera on top, moments below), the Locket top bar, the reply bar,
 // and on desktop the history panel. The feed is paged from the backend and polled for new moments.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { Avatar } from '../components/Avatar.jsx';
 import { Icon } from '../lib/icons.jsx';
@@ -60,6 +60,40 @@ function GridView({ list, title, total, loaded, onPick, onClose, onMore, onCamer
   );
 }
 
+const HistoryTile = memo(function HistoryTile({ moment: m, idx, active, onPick }) {
+  return (
+    <button type="button" className={active ? 'on' : ''} title={`${m.mine ? 'Bạn' : m.user.name} · ${ago(m.createdAt)}`}
+      onClick={() => onPick(idx)}>
+      <img src={thumb(m.image)} alt="" loading="lazy" decoding="async" draggable="false" />
+      {m.video ? <span className="vid"><Icon name="play" /></span> : null}
+    </button>
+  );
+});
+
+const HistoryPanel = memo(function HistoryPanel({ visible, index, filterLabel, feed, syncNote, loadedCount, onFilter, onPick, onMore }) {
+  return (
+    <aside className="history-panel" aria-label="Lịch sử">
+      <div className="history-head"><h2>Lịch sử</h2>
+        <button type="button" className="pill" onClick={(e) => onFilter(e.currentTarget)}>{filterLabel}<Icon name="chevDown" /></button></div>
+      <div className="history-scroll" onScroll={(e) => { const b = e.currentTarget; if (b.scrollHeight - b.scrollTop - b.clientHeight < 260) onMore(); }}>
+        {visible.length ? (
+          <div className="history-grid">
+            {visible.map((m, i) => (
+              <HistoryTile key={m.id} moment={m} idx={i} active={i + 1 === index} onPick={onPick} />
+            ))}
+          </div>
+        ) : (
+          feed.error ? <StateView icon="grid" tone="error" title="Không tải được" text={feed.error} />
+            : !feed.loaded ? <SkeletonGrid count={12} />
+              : <StateView icon="camera" title="Chưa có khoảnh khắc nào" text="Ảnh bạn và bạn bè gửi sẽ xuất hiện ở đây." />
+        )}
+        {syncNote ? <p className="history-note">{syncNote}</p> : null}
+        {feed.total > loadedCount ? <button type="button" className="btn btn-dark btn-sm history-more" onClick={onMore}>{feed.loadingMore ? 'Đang tải…' : 'Tải thêm'}</button> : null}
+      </div>
+    </aside>
+  );
+});
+
 export function Home({ under }) {
   const user = useApp((s) => s.user);
   const friends = useApp((s) => s.friends);
@@ -87,6 +121,9 @@ export function Home({ under }) {
   feedRef.current = feed;
   const indexRef = useRef(index);
   indexRef.current = index;
+  const previewingRef = useRef(previewing);
+  previewingRef.current = previewing;
+  const scrollRaf = useRef(0);
   const keepIdRef = useRef(null);
   const viewed = useRef(new Set());
   const syncTimer = useRef(0);
@@ -174,10 +211,11 @@ export function Home({ under }) {
 
   useEffect(() => {
     alive.current = true;
-    loadFriends();
+    // Stagger startup calls so the server prioritizes /api/feed + first media on constrained CPUs
     loadFeed();
-    loadUnread();
-    loadNotifications();
+    const tFriends = setTimeout(() => { if (alive.current) loadFriends(); }, 350);
+    const tUnread = setTimeout(() => { if (alive.current) loadUnread(); }, 900);
+    const tNotif = setTimeout(() => { if (alive.current) loadNotifications(); }, 2200);
     const poll = setInterval(() => {
       if (document.hidden) return;
       if (!replyRef.current?.matches(':focus')) loadFeed({ silent: true });
@@ -197,7 +235,19 @@ export function Home({ under }) {
     document.addEventListener('visibilitychange', onVisible);
     const profilePoll = setInterval(() => { if (!document.hidden) refreshMe(); }, 5 * 60 * 1000);
     window.addEventListener(RECONNECT_EVENT, onReconnect);
-    return () => { alive.current = false; clearInterval(poll); clearInterval(notifPoll); clearTimeout(syncTimer.current); window.removeEventListener(RECONNECT_EVENT, onReconnect); document.removeEventListener('visibilitychange', onVisible); clearInterval(profilePoll); };
+    return () => {
+      alive.current = false;
+      clearTimeout(tFriends);
+      clearTimeout(tUnread);
+      clearTimeout(tNotif);
+      cancelAnimationFrame(scrollRaf.current);
+      clearInterval(poll);
+      clearInterval(notifPoll);
+      clearTimeout(syncTimer.current);
+      window.removeEventListener(RECONNECT_EVENT, onReconnect);
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(profilePoll);
+    };
   }, [loadFeed]);
 
   /* ------------------------------------------------ paging */
@@ -209,11 +259,20 @@ export function Home({ under }) {
   }, []);
   homeBus.go = (target) => { if (!previewing) goTo(target === 'feed' ? 1 : 0, false); };
 
-  const onScroll = () => {
-    const pager = pagerRef.current;
-    const next = Math.round(pager.scrollTop / pager.clientHeight);
-    if (next !== indexRef.current) { setIndex(next); replyRef.current?.blur(); }
-  };
+  const onScroll = useCallback(() => {
+    if (scrollRaf.current) return;
+    scrollRaf.current = requestAnimationFrame(() => {
+      scrollRaf.current = 0;
+      const pager = pagerRef.current;
+      if (!pager || !pager.clientHeight) return;
+      const next = Math.round(pager.scrollTop / pager.clientHeight);
+      if (next !== indexRef.current) { setIndex(next); replyRef.current?.blur(); }
+    });
+  }, []);
+
+  const pickHistory = useCallback((i) => {
+    if (!previewingRef.current) goTo(i + 1, false);
+  }, [goTo]);
 
   // Keep the reader on the same moment when the list changes (new moments, filter, deletes).
   useLayoutEffect(() => {
@@ -369,7 +428,7 @@ export function Home({ under }) {
     }
   };
 
-  const openFilter = (anchor) => {
+  const openFilter = useCallback((anchor) => {
     const options = [{ uid: null, name: 'Mọi người' }, ...friends.map((f) => ({ uid: f.uid, name: f.name, user: f })), { uid: user.uid, name: 'Bạn', user }];
     ui.popover(anchor, ({ close }) => (
       <div>
@@ -382,7 +441,7 @@ export function Home({ under }) {
         ))}
       </div>
     ));
-  };
+  }, [friends, user, filterUid, goTo]);
 
   const patchMoment = useCallback((id, fields) => {
     setMoments((list) => list.map((m) => (m.id === id ? { ...m, ...fields } : m)));
@@ -450,8 +509,12 @@ export function Home({ under }) {
         <CameraPage active={index === 0 && !covered} latest={moments[0]} onPreviewChange={setPreviewing} onPosted={onPosted} onOpenHistory={() => goTo(1)} />
         {visible.length
           ? visible.map((m, i) => (
-            <MomentPage key={m.id} moment={m} active={i + 1 === index && !covered} playingMusic={music === m.id}
-              onMusic={toggleMusic} onComments={showComments} />
+            Math.abs(i + 1 - index) <= 2 ? (
+              <MomentPage key={m.id} moment={m} active={i + 1 === index && !covered} playingMusic={music === m.id}
+                onMusic={toggleMusic} onComments={showComments} />
+            ) : (
+              <section key={m.id} className="page page-moment" data-id={m.id} aria-hidden="true" />
+            )
           ))
           : <section className="page page-empty"><div className="empty">{emptyBody}</div></section>}
       </div>
@@ -502,29 +565,8 @@ export function Home({ under }) {
         <button type="button" className="icon-btn" aria-label="Tiếp" disabled={index >= pageCount - 1} onClick={() => goTo(Math.min(index + 1, pageCount - 1))}><Icon name="arrowDown" /></button>
       </div>
 
-      <aside className="history-panel" aria-label="Lịch sử">
-        <div className="history-head"><h2>Lịch sử</h2>
-          <button type="button" className="pill" onClick={(e) => openFilter(e.currentTarget)}>{filterLabel}<Icon name="chevDown" /></button></div>
-        <div className="history-scroll" onScroll={(e) => { const b = e.currentTarget; if (b.scrollHeight - b.scrollTop - b.clientHeight < 260) loadMore(); }}>
-          {visible.length ? (
-            <div className="history-grid">
-              {visible.map((m, i) => (
-                <button type="button" key={m.id} className={i + 1 === index ? 'on' : ''} title={`${m.mine ? 'Bạn' : m.user.name} · ${ago(m.createdAt)}`}
-                  onClick={() => { if (!previewing) goTo(i + 1, false); }}>
-                  <img src={thumb(m.image)} alt="" loading="lazy" decoding="async" draggable="false" />
-                  {m.video ? <span className="vid"><Icon name="play" /></span> : null}
-                </button>
-              ))}
-            </div>
-          ) : (
-            feed.error ? <StateView icon="grid" tone="error" title="Không tải được" text={feed.error} />
-              : !feed.loaded ? <SkeletonGrid count={12} />
-                : <StateView icon="camera" title="Chưa có khoảnh khắc nào" text="Ảnh bạn và bạn bè gửi sẽ xuất hiện ở đây." />
-          )}
-          {syncNote ? <p className="history-note">{syncNote}</p> : null}
-          {feed.total > loadedCount ? <button type="button" className="btn btn-dark btn-sm history-more" onClick={loadMore}>{feed.loadingMore ? 'Đang tải…' : 'Tải thêm'}</button> : null}
-        </div>
-      </aside>
+      <HistoryPanel visible={visible} index={index} filterLabel={filterLabel} feed={feed} syncNote={syncNote}
+        loadedCount={loadedCount} onFilter={openFilter} onPick={pickHistory} onMore={loadMore} />
 
       {grid ? (
         <GridView list={visible} title={filterLabel} total={feed.total} loaded={loadedCount} onMore={loadMore}

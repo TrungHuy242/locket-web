@@ -13,9 +13,20 @@ from .live_common import FIRESTORE, OWNER_IN_URL, proxied, to_ms
 
 
 class ChatMixin:
-    def conversations(self) -> list:
+    CONVS_TTL = 10
+
+    def _invalidate_convs(self) -> None:
+        with self._state_lock:
+            self._convs_cache = None
+
+    def conversations(self, force: bool = False) -> list:
         # Read Firestore directly (with pagination) instead of the SDK helper, which only
         # returns the first page and swallows errors into an empty list.
+        if not force:
+            with self._state_lock:
+                hit = self._convs_cache
+            if hit and time.time() - hit[0] < self.CONVS_TTL:
+                return hit[1]
         raw = []
         for doc in self._firestore_list(f"users/{self.uid}/conversations"):
             f = doc.get("fields", {})
@@ -51,9 +62,10 @@ class ChatMixin:
                 "lastAt": to_ms(latest.get("timestamp")),
                 "lastReadAt": to_ms(c.get("last_read_at")),
             })
+        out.sort(key=lambda c: c["lastAt"], reverse=True)
         with self._state_lock:
             self._conv_by_peer.update(conv_map)
-        out.sort(key=lambda c: c["lastAt"], reverse=True)
+            self._convs_cache = (time.time(), out)
         return out
 
     def _conversation_id(self, peer_uid: str) -> Optional[str]:
@@ -173,6 +185,7 @@ class ChatMixin:
                     "id": res.get("message_uid") or res.get("msg_id") or res.get("client_token") or "", "sender": self.uid,
                     "peer": peer_uid, "cid": resolved_cid, "text": text,
                     "createdAt": int(time.time() * 1000), "reactions": []})
+        self._invalidate_convs()
         return {
             "id": res.get("message_uid") or res.get("msg_id") or res.get("client_token"),
             "conversationId": resolved_cid,
@@ -187,6 +200,7 @@ class ChatMixin:
         if cid:
             payload["conversation_uid"] = cid
         self._api("markAsRead", payload)
+        self._invalidate_convs()
 
     def react_message(self, conversation_id, message_id, emoji) -> None:
         payload = {"conversation_id": conversation_id, "message_id": message_id}
@@ -201,9 +215,11 @@ class ChatMixin:
                         row["reactions"] = [r for r in row.get("reactions", []) if r.get("sender") != self.uid]
                         if emoji:
                             row["reactions"].append({"sender": self.uid, "emoji": emoji, "createdAt": int(time.time() * 1000)})
+        self._invalidate_convs()
 
     def delete_message(self, conversation_id, message_id) -> None:
         self._api("deleteChatMessage", {"conversation_uid": conversation_id, "message_uid": message_id})
         with self._state_lock:
             for mid, rows in list(self._comments.items()):
                 self._comments[mid] = [r for r in rows if r.get("id") != message_id]
+        self._invalidate_convs()

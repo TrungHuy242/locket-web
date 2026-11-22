@@ -13,6 +13,8 @@ export const appStore = createStore({
   outgoing: [],
   blocked: [],
   friendsLoaded: false,
+  conversations: null,    // cached conversation list for instant Chat tab switch (SWR)
+  memoriesCache: null,    // cached first page of unfiltered Memories (SWR)
   unread: 0,
   notifications: null,    // last list from /api/notifications
   notifUnread: 0,
@@ -42,7 +44,10 @@ export async function refreshMe() {
 export async function loadUnread() {
   try {
     const { conversations } = await api.conversations();
-    appStore.set({ unread: conversations.reduce((sum, c) => sum + (c.unread || 0), 0) });
+    appStore.set({
+      conversations,
+      unread: conversations.reduce((sum, c) => sum + (c.unread || 0), 0),
+    });
     return conversations;
   } catch {
     return null;
@@ -50,13 +55,26 @@ export async function loadUnread() {
 }
 
 // Notifications are rebuilt by the server from real Locket events; it answers from its cache and
-// refreshes in the background, so polling this is cheap.
+// refreshes in the background, so polling this is cheap. When the server is still doing its first
+// cold build (`loading: true`), follow up shortly so the badge & list appear without manual reload.
 let notifSeq = 0;
-export async function loadNotifications({ refresh = false } = {}) {
+let notifRetryTimer = 0;
+export async function loadNotifications({ refresh = false, _attempt = 0 } = {}) {
+  clearTimeout(notifRetryTimer);
+  notifRetryTimer = 0;
   const seq = ++notifSeq;
   try {
     const data = await api.notifications(refresh);
-    if (seq === notifSeq) appStore.set({ notifications: data, notifUnread: data.unread, notifError: null });
+    if (seq === notifSeq) {
+      appStore.set({ notifications: data, notifUnread: data.unread, notifError: null });
+      if (data?.loading && _attempt < 8 && appStore.get().user) {
+        notifRetryTimer = setTimeout(() => {
+          if (seq === notifSeq && appStore.get().user) {
+            loadNotifications({ refresh: false, _attempt: _attempt + 1 });
+          }
+        }, 3500);
+      }
+    }
     return data;
   } catch (err) {
     if (err.status !== 401 && seq === notifSeq) appStore.set({ notifError: err.message });
@@ -66,6 +84,8 @@ export async function loadNotifications({ refresh = false } = {}) {
 
 // Mark one, several or all notifications read: the UI updates at once, the server confirms.
 export async function markNotificationsRead(ids, all = false) {
+  clearTimeout(notifRetryTimer);
+  notifRetryTimer = 0;
   const wanted = new Set(ids || []);
   appStore.set((s) => {
     if (!s.notifications) return {};
@@ -84,8 +104,14 @@ export async function markNotificationsRead(ids, all = false) {
 }
 
 export function resetApp() {
-  appStore.set({ user: null, friends: [], incoming: [], outgoing: [], blocked: [], friendsLoaded: false, unread: 0,
-    notifications: null, notifUnread: 0, notifError: null, homeView: 'camera' });
+  clearTimeout(notifRetryTimer);
+  notifRetryTimer = 0;
+  ++notifSeq;
+  appStore.set({
+    user: null, friends: [], incoming: [], outgoing: [], blocked: [], friendsLoaded: false,
+    conversations: null, memoriesCache: null, unread: 0,
+    notifications: null, notifUnread: 0, notifError: null, homeView: 'camera',
+  });
 }
 
 // Remove someone from every relationship list right away; loadFriends() then confirms with Locket.

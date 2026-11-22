@@ -69,7 +69,8 @@
   .view.from-right, .view.from-left, .view.from-bottom { transform: translateY(14px); opacity: 0; transition: transform .34s var(--ease-ios), opacity .22s; }
   .view.in { transform: none; opacity: 1; }
   .view.under-right, .view.under-left { transform: none; }
-  .home.under-right, .home.under-left { transform: none; filter: none; }
+  .home.under-right, .home.under-left { transform: none; }
+  .home.under-right::after, .home.under-left::after { opacity: 0; }
   .view > .navbar, .view > .view-scroll { width: 100%; max-width: 680px; margin-left: auto; margin-right: auto; }
   .navbar { height: 84px; padding-top: 22px; }
   .navbar h2 { font-size: 26px; }

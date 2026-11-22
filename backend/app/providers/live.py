@@ -26,6 +26,7 @@ from typing import Optional
 import requests
 
 from .. import config, state_sync
+from ..account_cache import AccountCache, get_account_cache
 from ..history import MomentStore, get_moment_store
 from ..notifications import NotificationState
 from .base import AuthExpired, Provider, ProviderError, display_name
@@ -86,6 +87,10 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
         self._http = requests.Session()
         self._http.mount("https://", requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=12))
         self._store: Optional[MomentStore] = None
+        self._account_cache: Optional[AccountCache] = None
+        self._cache_loaded = False
+        self._friends_cache: Optional[tuple[float, dict]] = None
+        self._convs_cache: Optional[tuple[float, list]] = None
         self._feed_lock = threading.Lock()
         self._sync_warnings: set = set()
         self._full_synced = False
@@ -95,6 +100,7 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
         self._conv_updated: dict[str, int] = {}
         self._comments: dict = {}          # moment id -> chat messages written about it
         self._comments_at: dict = {}       # conversation id -> when its comments were last refreshed
+        self._profiles_dirty_at = 0.0
         self._patch_session_safety()
         self._patch_time_caption()
         self._full_at = self._delta_at = self._chat_at = 0.0
@@ -180,7 +186,49 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
         with self._lock:
             if self._store is None:
                 self._store = get_moment_store(self.uid)
-            return self._store
+        self._ensure_cache_loaded()
+        return self._store
+
+    def _ensure_cache_loaded(self) -> None:
+        if self._cache_loaded or not self.uid:
+            return
+        with self._lock:
+            if self._cache_loaded or not self.uid:
+                return
+            if self._account_cache is None:
+                self._account_cache = get_account_cache(self.uid)
+            profiles, conv_updated, chat_full_done, comments = self._account_cache.snapshot()
+            with self._state_lock:
+                for uid, item in profiles.items():
+                    self._profiles.setdefault(uid, item)
+                for cid, ts in conv_updated.items():
+                    self._conv_updated.setdefault(cid, ts)
+                if chat_full_done and not self._chat_full_done:
+                    self._chat_full_done = True
+                for mid, rows in comments.items():
+                    self._comments.setdefault(mid, rows)
+            self._cache_loaded = True
+
+    def _persist_cache(self, *, profiles: bool = False, chat: bool = False) -> None:
+        if not self.uid:
+            return
+        self._ensure_cache_loaded()
+        if self._account_cache is None:
+            return
+        with self._state_lock:
+            prof_snap = dict(self._profiles) if profiles else None
+            conv_snap = dict(self._conv_updated) if chat else None
+            done_snap = self._chat_full_done if chat else None
+            comm_snap = {k: list(v) for k, v in self._comments.items()} if chat else None
+        try:
+            self._account_cache.save(
+                profiles=prof_snap,
+                conv_updated=conv_snap,
+                chat_full_done=done_snap,
+                comments=comm_snap,
+            )
+        except OSError as exc:
+            log.debug("Account cache save failed: %s", exc)
 
     def is_authenticated(self) -> bool:
         return self.client.is_authenticated()
@@ -265,6 +313,7 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
     def _user(self, uid: str) -> dict:
         if not uid:
             return self._user_from_profile({}, "")
+        self._ensure_cache_loaded()
         with self._state_lock:
             if uid == self.uid and self._me:
                 return self._me
@@ -277,15 +326,44 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
         except AuthExpired:
             raise
         except ProviderError:
+            if hit:
+                return hit[1]
             user = self._user_from_profile({}, uid)
+        now = time.time()
+        should_save = False
         with self._state_lock:
-            self._profiles[uid] = (time.time(), user)
+            self._profiles[uid] = (now, user)
+            if now - self._profiles_dirty_at > 30:
+                self._profiles_dirty_at = now
+                should_save = True
+        if should_save:
+            self._persist_cache(profiles=True)
         return user
 
     def _users(self, uids) -> dict:
+        self._ensure_cache_loaded()
         unique = [u for u in dict.fromkeys(uids) if u]
-        self._token()
-        return dict(zip(unique, self._pool.map(self._user, unique)))
+        if not unique:
+            return {}
+        now = time.time()
+        result: dict = {}
+        missing: list = []
+        with self._state_lock:
+            for u in unique:
+                if u == self.uid and self._me:
+                    result[u] = self._me
+                    continue
+                hit = self._profiles.get(u)
+                if hit and now - hit[0] < PROFILE_TTL:
+                    result[u] = hit[1]
+                else:
+                    missing.append(u)
+        if missing:
+            self._token()
+            fetched = dict(zip(missing, self._pool.map(self._user, missing)))
+            result.update(fetched)
+            self._persist_cache(profiles=True)
+        return result
 
     # ---------------------------------------------------------------- account
     def login(self, email: str, password: str) -> dict:

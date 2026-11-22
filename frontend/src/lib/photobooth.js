@@ -54,6 +54,25 @@ export function loadImage(url) {
 export const loadedImage = (url) => ready.get(url) || null;
 export const stickerImage = (id) => ready.get(stickerUrl(id)) || null;
 
+const BOOTH_FONTS_URL = 'https://fonts.googleapis.com/css2?family=Comfortaa:wght@700&family=Dancing+Script:wght@700&family=Itim&family=Pacifico&family=Playfair+Display:ital,wght@1,700&family=Space+Mono:wght@700&display=swap';
+let boothFontsPromise = null;
+function ensureBoothFonts() {
+  if (boothFontsPromise) return boothFontsPromise;
+  boothFontsPromise = new Promise((resolve) => {
+    if (typeof document === 'undefined' || document.getElementById('booth-fonts')) { resolve(); return; }
+    const timer = setTimeout(resolve, 4000);
+    const done = () => { clearTimeout(timer); resolve(); };
+    const link = document.createElement('link');
+    link.id = 'booth-fonts';
+    link.rel = 'stylesheet';
+    link.href = BOOTH_FONTS_URL;
+    link.onload = done;
+    link.onerror = done;
+    document.head.appendChild(link);
+  });
+  return boothFontsPromise;
+}
+
 function fontSpec(fontId, size) {
   const f = fontById(fontId);
   return `${f.style || 'normal'} ${f.weight || 400} ${Math.round(size)}px ${f.css}, "Nunito", sans-serif`;
@@ -75,9 +94,14 @@ export async function preloadBooth(opts, extraTemplates = []) {
   opts.stickers.forEach((s) => urls.add(stickerUrl(s.a)));
   if (opts.font) fonts.add(opts.font);
   fonts.add('Space Mono');
+  const loadFonts = async () => {
+    await ensureBoothFonts();
+    if (!document.fonts?.load) return;
+    await Promise.all([...fonts].map((f) => document.fonts.load(fontSpec(f, 40)).catch(() => null)));
+  };
   await Promise.all([
     ...[...urls].map((u) => loadImage(u).catch(() => null)),
-    ...[...fonts].map((f) => (document.fonts?.load ? document.fonts.load(fontSpec(f, 40)).catch(() => null) : null)),
+    loadFonts(),
   ]);
 }
 

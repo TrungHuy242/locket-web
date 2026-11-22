@@ -9,6 +9,12 @@ from .live_common import to_ms
 
 
 class FriendsMixin:
+    FRIENDS_TTL = 30
+
+    def _invalidate_friends(self) -> None:
+        with self._state_lock:
+            self._friends_cache = None
+
     def _uids_in(self, collection: str) -> list:
         docs = self._firestore_list(f"users/{self.uid}/{collection}")
         return [d["name"].rsplit("/", 1)[-1] for d in docs if d.get("name")]
@@ -22,8 +28,13 @@ class FriendsMixin:
             out.append((d["name"].rsplit("/", 1)[-1], to_ms(stamp)))
         return out
 
-    def friends(self) -> dict:
+    def friends(self, force: bool = False) -> dict:
         """Friends, requests and blocked users, read straight from my Locket relationship collections."""
+        if not force:
+            with self._state_lock:
+                hit = self._friends_cache
+            if hit and time.time() - hit[0] < self.FRIENDS_TTL:
+                return hit[1]
         self._token()
         cols = ("friends", "incoming_friend_requests", "outgoing_friend_requests", "blocked_users")
         groups = dict(zip(cols, self._pool.map(self._relation_docs, cols)))
@@ -32,12 +43,15 @@ class FriendsMixin:
         def people(col):
             return [{**users[uid], "since": at} for uid, at in groups[col]]
 
-        return {
+        result = {
             "friends": sorted(people("friends"), key=lambda u: u["name"].lower()),
             "incoming": sorted(people("incoming_friend_requests"), key=lambda u: -u["since"]),
             "outgoing": sorted(people("outgoing_friend_requests"), key=lambda u: -u["since"]),
             "blocked": sorted(people("blocked_users"), key=lambda u: u["name"].lower()),
         }
+        with self._state_lock:
+            self._friends_cache = (time.time(), result)
+        return result
 
     def friend_profile(self, uid: str) -> dict:
         """Everything Locket lets me know about one person, plus what my synced history holds of them."""
@@ -107,22 +121,28 @@ class FriendsMixin:
                                 "Hãy gửi lời mời trong ứng dụng Locket, hoặc gửi liên kết mời của bạn cho người đó.", 403)
         if err:
             raise ProviderError(f"Không gửi được lời mời kết bạn: {err}", 502)
+        self._invalidate_friends()
 
     def accept_request(self, uid: str) -> None:
         self._api("acceptFriendRequest", {
             "user_uid": uid, "during_signup": False,
             "ios_version": f"{self.client.device.app_version}.{self.client.device.build_number}",
         })
+        self._invalidate_friends()
 
     def delete_request(self, uid: str, direction: str) -> None:
         """Decline an incoming request or withdraw one I sent (Locket's deleteFriendRequest)."""
         self._api("deleteFriendRequest", {"user_uid": uid, "direction": direction})
+        self._invalidate_friends()
 
     def remove_friend(self, uid: str) -> None:
         self._api("removeFriend", {"user_uid": uid})
+        self._invalidate_friends()
 
     def block(self, uid: str) -> None:
         self._api("blockFriend", {"user_uid": uid})
+        self._invalidate_friends()
 
     def unblock(self, uid: str) -> None:
         self._api("unblockUser", {"user_uid": uid})
+        self._invalidate_friends()

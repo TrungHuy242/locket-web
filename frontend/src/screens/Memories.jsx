@@ -11,7 +11,7 @@ import { Navbar, nav, pushBack } from '../ui/nav.jsx';
 import { ui } from '../ui/overlays.jsx';
 import { MomentVideo } from './MomentPage.jsx';
 import { MyReactions, openActivity, openComments, openEmojiPicker, sendReaction } from './Interactions.jsx';
-import { QUICK_EMOJI } from '../store.js';
+import { QUICK_EMOJI, appStore } from '../store.js';
 import { RECONNECT_EVENT } from '../components/AppStatus.jsx';
 import { SkeletonGrid, Spinner, StateView } from '../ui/kit.jsx';
 
@@ -177,8 +177,10 @@ export function Memories({ view }) {
   const [year, setYear] = useState(null);
   const [month, setMonth] = useState(null);
   const [groupBy, setGroupBy] = useState('day');
-  const [items, setItems] = useState([]);
-  const [state, setState] = useState({ status: 'loading', error: '', total: 0, cursor: null, facets: null, historyTotal: 0, loadingMore: false });
+  const [items, setItems] = useState(() => (!view.props?.author ? appStore.get().memoriesCache?.items || [] : []));
+  const [state, setState] = useState(() => (!view.props?.author && appStore.get().memoriesCache?.state)
+    || { status: 'loading', error: '', total: 0, cursor: null, facets: null, historyTotal: 0, loadingMore: false });
+  const initialCacheRef = useRef(!view.props?.author && !!appStore.get().memoriesCache);
   const [open, setOpen] = useState(null);           // index in items of the viewer
   const [attempt, setAttempt] = useState(0);        // bumps to retry after an error
   // back online after a failed load: try again by itself
@@ -201,13 +203,18 @@ export function Memories({ view }) {
   // any filter change starts over from the newest moment
   useEffect(() => {
     const id = ++reqId.current;
-    setState((s) => ({ ...s, status: 'loading', error: '' }));
+    const isUnfiltered = filters.kind === 'all' && !filters.author && !filters.q && !filters.year && !filters.month;
+    const silentSwr = initialCacheRef.current && isUnfiltered;
+    initialCacheRef.current = false;
+    if (!silentSwr) setState((s) => ({ ...s, status: 'loading', error: '' }));
     api.memories({ ...filters, limit: PAGE })
       .then((d) => {
         if (id !== reqId.current) return;
+        const nextState = { status: 'ready', error: '', total: d.total, cursor: d.nextCursor, facets: d.facets, historyTotal: d.historyTotal, loadingMore: false };
         setItems(d.moments);
-        setState({ status: 'ready', error: '', total: d.total, cursor: d.nextCursor, facets: d.facets, historyTotal: d.historyTotal, loadingMore: false });
-        scrollRef.current?.scrollTo({ top: 0 });
+        setState(nextState);
+        if (isUnfiltered) appStore.set({ memoriesCache: { items: d.moments, state: nextState } });
+        if (!silentSwr) scrollRef.current?.scrollTo({ top: 0 });
       })
       .catch((err) => {
         if (id !== reqId.current || err.status === 401) return;

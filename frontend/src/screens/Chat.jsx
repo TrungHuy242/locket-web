@@ -25,9 +25,9 @@ const dayLabel = (ms) => {
 export function ChatList({ view }) {
   const friends = useApp((s) => s.friends);
   const [split, setSplit] = useState(isDesktop);
-  const [rows, setRows] = useState(null);
+  const [rows, setRows] = useState(() => appStore.get().conversations);
   const [error, setError] = useState(null);
-  const [peer, setPeer] = useState(view.props?.peer || null);   // thread shown in the desktop pane
+  const [peer, setPeer] = useState(() => view.props?.peer || (isDesktop() && appStore.get().conversations?.length ? appStore.get().conversations[0].peer : null));   // thread shown in the desktop pane
 
   useEffect(() => {
     const mq = window.matchMedia('(min-width: 769px)');
@@ -41,7 +41,7 @@ export function ChatList({ view }) {
       const { conversations } = await api.conversations();
       setRows(conversations);
       setError(null);
-      appStore.set({ unread: conversations.reduce((sum, c) => sum + (c.unread || 0), 0) });
+      appStore.set({ conversations, unread: conversations.reduce((sum, c) => sum + (c.unread || 0), 0) });
       return conversations;
     } catch (err) {
       setError(err.message);

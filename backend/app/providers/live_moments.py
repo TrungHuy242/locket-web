@@ -185,6 +185,7 @@ class MomentsMixin:
         later scans check each conversation's `last_updated` timestamp and only pull new pages from
         conversations that actually changed.
         """
+        self._ensure_cache_loaded()
         with self._state_lock:
             self._sync_warnings.discard("chat")
             full_mode = not self._chat_full_done
@@ -325,6 +326,7 @@ class MomentsMixin:
                         self._conv_updated[cid] = conv_updated.get(cid, 0)
                 if not had_failure:
                     self._chat_full_done = True
+        self._persist_cache(chat=True)
 
     # --- own moments: recover video + exact time from Firebase Storage ---------------
     @staticmethod
@@ -655,11 +657,13 @@ class MomentsMixin:
                                         mask=("reply_moment", "created_at", "body", "sender", "reactions"))
             return cid, peer, docs
 
+        changed = False
         for cid, peer, docs in self._pool.map(fetch, targets):
             if not docs:
                 with self._state_lock:
                     self._comments_at[cid] = now
                 continue
+            changed = True
             window_start = min(to_ms(d.get("fields", {}).get("created_at", {}).get("timestampValue")) for d in docs)
             fresh: dict = {}
             for d in docs:
@@ -679,6 +683,8 @@ class MomentsMixin:
                         self._comments[mid] = rows
                     else:
                         self._comments.pop(mid, None)
+        if changed:
+            self._persist_cache(chat=True)
 
     def comments(self, moment_id: str) -> dict:
         """Chat messages that reply to this moment (Locket has no public comments: replies go to chat)."""

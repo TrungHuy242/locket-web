@@ -124,7 +124,7 @@ class NotificationsMixin:
 
     def _collect_notifications(self) -> dict:
         since = int((time.time() - self.NOTIF_DAYS * 86400) * 1000)
-        convs = self.conversations()
+        convs = self.conversations(force=True)
         # the three sources run on their own executor: each of them fans out on self._pool, and nesting
         # those waits inside self._pool could exhaust it
         jobs = {"reactions": self._notif_pool.submit(self._notif_reactions, since),
@@ -151,11 +151,23 @@ class NotificationsMixin:
 
     def notifications(self, refresh: bool = False) -> dict:
         cached = self._notif_cache
-        if refresh or not cached:
+        if refresh:
             with self._notif_lock:
-                if refresh or not self._notif_cache:
-                    self._notif_cache = self._collect_notifications()
+                self._notif_cache = self._collect_notifications()
                 cached = self._notif_cache
+        elif not cached:
+            # First request on a cold server: kick off collection in background instead of blocking 10-15s
+            if self._notif_lock.acquire(blocking=False):
+                def initial_build():
+                    try:
+                        self._notif_cache = self._collect_notifications()
+                    except Exception as exc:
+                        log.warning("Notification initial build failed: %s", exc)
+                    finally:
+                        self._notif_lock.release()
+                threading.Thread(target=initial_build, name="notif-init", daemon=True).start()
+            return {"notifications": [], "unread": 0, "warnings": [], "updatedAt": 0,
+                    "windowDays": self.NOTIF_DAYS, "loading": True}
         elif time.time() - cached["at"] > self.NOTIF_TTL and self._notif_lock.acquire(blocking=False):
             # stale: answer at once with the last list and rebuild it in the background (~10 s of reads)
             def rebuild():
@@ -184,7 +196,7 @@ class NotificationsMixin:
                 "peer": n.get("peer"), "conversationId": n.get("conversationId"),
             })
         return {"notifications": out, "unread": unread, "warnings": cached["warnings"],
-                "updatedAt": int(cached["at"] * 1000), "windowDays": self.NOTIF_DAYS}
+                "updatedAt": int(cached["at"] * 1000), "windowDays": self.NOTIF_DAYS, "loading": False}
 
     def mark_notifications(self, ids: Optional[list] = None, everything: bool = False) -> dict:
         cached = self._notif_cache

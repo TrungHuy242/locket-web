@@ -1,11 +1,13 @@
 """API security, CSRF, rate-limit, media proxy SSRF and session eviction tests."""
 from __future__ import annotations
 
+import asyncio
 import io
 import time
 
 from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from backend.app import main
 from backend.app.providers.base import Provider
@@ -18,6 +20,19 @@ client = TestClient(main.app)
 class _DummyProvider(Provider):
     def me(self, refresh: bool = False) -> dict:
         return {"uid": "u1", "firstName": "Test", "lastName": "", "name": "Test", "username": "test", "avatar": None}
+
+    def feed(self, before=None, limit: int = 30, refresh: bool = False) -> dict:
+        return {
+            "moments": [
+                {"id": f"m{i}", "caption": "hello locket web " * 8, "image": "/api/media?u=x"}
+                for i in range(15)
+            ],
+            "nextCursor": None,
+            "total": 15,
+            "syncing": False,
+            "syncError": None,
+            "warnings": [],
+        }
 
 
 def test_health_and_security_headers():
@@ -82,17 +97,110 @@ def test_media_proxy_blocks_ssrf_and_svg(monkeypatch):
     # SVG content type from an allowed host must be rejected (XSS prevention)
     class _SvgResp:
         status_code = 200
-        headers = {"Content-Type": "image/svg+xml"}
+        headers = {"content-type": "image/svg+xml"}
         closed = False
 
-        def close(self):
+        async def aclose(self):
             self.closed = True
 
     svg_resp = _SvgResp()
-    monkeypatch.setattr(main.requests, "get", lambda *a, **kw: svg_resp)
+
+    class _FakeMediaClient:
+        def build_request(self, method, url, headers=None):
+            return (method, url, headers)
+
+        async def send(self, req, stream=True):
+            return svg_resp
+
+    monkeypatch.setattr(main, "_get_media_client", lambda: _FakeMediaClient())
     r = authed.get("/api/media", params={"u": "https://cdn.locketcamera.com/icon.svg"})
     assert r.status_code == 415
     assert svg_resp.closed is True
+
+
+def test_selective_gzip_middleware_compresses_json_skips_media(monkeypatch):
+    monkeypatch.setattr(main.store, "get", lambda sid: _DummyProvider())
+    authed = TestClient(main.app, cookies={"lk_sid": "s" * 40})
+
+    # Large JSON responses should be gzip-compressed
+    r_json = authed.get("/api/feed", headers={"Accept-Encoding": "gzip"})
+    assert r_json.status_code == 200
+    assert r_json.headers.get("content-encoding") == "gzip"
+    assert len(r_json.json()["moments"]) == 15
+
+    # Binary media responses must bypass GZipMiddleware to avoid wasted CPU
+    payload = b"\xff\xd8\xff\xe0" + (b"0123456789abcdef" * 128)
+
+    class _ImgResp:
+        status_code = 200
+        headers = {"content-type": "image/jpeg", "content-length": str(len(payload))}
+        closed = False
+
+        async def aiter_bytes(self, chunk_size=65536):
+            yield payload
+
+        async def aclose(self):
+            self.closed = True
+
+    img_resp = _ImgResp()
+
+    class _FakeMediaClient:
+        def build_request(self, method, url, headers=None):
+            return (method, url, headers)
+
+        async def send(self, req, stream=True):
+            return img_resp
+
+    monkeypatch.setattr(main, "_get_media_client", lambda: _FakeMediaClient())
+    r_media = authed.get("/api/media", params={"u": "https://cdn.locketcamera.com/pic.jpg"},
+                         headers={"Accept-Encoding": "gzip"})
+    assert r_media.status_code == 200
+    assert "content-encoding" not in r_media.headers
+    assert r_media.headers.get("cache-control") == main.MEDIA_CACHE_HEADER
+    assert r_media.content == payload
+    assert img_resp.closed is True
+
+
+def test_thumbnail_dedupes_concurrent_requests_and_caches_webp(isolated_data, monkeypatch):
+    buf = io.BytesIO()
+    Image.new("RGB", (240, 240), (255, 198, 41)).save(buf, "PNG")
+    png_bytes = buf.getvalue()
+    fetch_calls = 0
+
+    class _FakeStreamCtx:
+        status_code = 200
+        headers = {"content-type": "image/png"}
+
+        async def __aenter__(self):
+            nonlocal fetch_calls
+            fetch_calls += 1
+            await asyncio.sleep(0.05)
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def aiter_bytes(self, chunk_size=65536):
+            yield png_bytes
+
+    class _FakeMediaClient:
+        def stream(self, method, url):
+            return _FakeStreamCtx()
+
+    monkeypatch.setattr(main, "_get_media_client", lambda: _FakeMediaClient())
+
+    async def _run():
+        url = "https://cdn.locketcamera.com/dedupe-test.png"
+        r1, r2 = await asyncio.gather(main._thumbnail(url, 128), main._thumbnail(url, 128))
+        r3 = await main._thumbnail(url, 128)
+        return r1, r2, r3
+
+    r1, r2, r3 = asyncio.run(_run())
+    assert fetch_calls == 1
+    for resp in (r1, r2, r3):
+        assert resp.media_type == "image/webp"
+        assert resp.headers.get("cache-control") == main.THUMB_CACHE_HEADER
+        assert b"WEBP" in resp.body[:16]
 
 
 def test_save_upload_temp_streams_and_enforces_limit():

@@ -29,7 +29,7 @@ atexit.register(_cleanup_data_dir)
 @pytest.fixture()
 def isolated_data(monkeypatch, tmp_path):
     """Redirect config directories to a per-test tmp_path and clear in-memory registries."""
-    from backend.app import config, history, notifications
+    from backend.app import account_cache, config, history, notifications
 
     for name in ("SESSIONS_DIR", "ACCOUNTS_DIR", "THUMBS_DIR", "VIDEO_CACHE_DIR"):
         sub = tmp_path / name.lower()
@@ -38,4 +38,5 @@ def isolated_data(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(history, "_stores", {})
     monkeypatch.setattr(notifications, "_states", {})
+    monkeypatch.setattr(account_cache, "_caches", {})
     return tmp_path
