@@ -74,11 +74,33 @@ def test_sanitize_overlay_meta_and_overlay_builder_roundtrip(isolated_data, tmp_
         assert parsed_rev["icon"]["value"] == "star.fill"
 
         # Weather overlay round-trip
-        p._overlay_ctx.meta = {"weather": {"symbol": "cloud.rain.fill"}}
+        p._overlay_ctx.meta = {"weather": {"symbol": "cloud.rain.fill"}, "textColor": "#111111"}
         ov_w = p.client.moments.build_overlay(text="26°C · Có mưa", note_type="weather")
         parsed_w = parse_overlay({"overlays": [ov_w]})
         assert parsed_w["type"] == "weather"
         assert parsed_w["icon"]["value"] == "cloud.rain.fill"
+        assert parsed_w["icon"]["color"] == "#111111"
+
+        # Streak, Star Sign, Locket Count & Custom Emoji overlays
+        p._overlay_ctx.meta = {"streak": 12, "colors": ["#FF512F", "#F09819"], "textColor": "#FFFFFF"}
+        ov_st = p.client.moments.build_overlay(text="Chuỗi 12 ngày", note_type="streak")
+        parsed_st = parse_overlay({"overlays": [ov_st]})
+        assert parsed_st["type"] == "streak" and parsed_st["icon"]["value"] == "flame.fill"
+
+        p._overlay_ctx.meta = {"emoji": "♌", "colors": ["#F12711", "#F5AF19"], "textColor": "#FFFFFF"}
+        ov_zod = p.client.moments.build_overlay(text="Sư Tử", note_type="star_sign")
+        parsed_zod = parse_overlay({"overlays": [ov_zod]})
+        assert parsed_zod["type"] == "star_sign" and parsed_zod["icon"]["value"] == "♌"
+
+        p._overlay_ctx.meta = {"emoji": "☕", "colors": ["#11998E", "#38EF7D"], "textColor": "#0E2918"}
+        ov_loc = p.client.moments.build_overlay(text="Highlands Coffee", note_type="location")
+        parsed_loc = parse_overlay({"overlays": [ov_loc]})
+        assert parsed_loc["type"] == "location" and parsed_loc["icon"]["kind"] == "emoji" and parsed_loc["icon"]["value"] == "☕"
+
+        p._overlay_ctx.meta = {"count": 150}
+        ov_cnt = p.client.moments.build_overlay(text="150 Lockets", note_type="locket_count")
+        parsed_cnt = parse_overlay({"overlays": [ov_cnt]})
+        assert parsed_cnt["type"] == "locket_count" and parsed_cnt["icon"]["value"] == "heart.fill"
     finally:
         p._overlay_ctx.meta = None
         p.logout()
@@ -177,6 +199,20 @@ def test_memories_export_zip_tools_and_sync_endpoints(isolated_data, monkeypatch
             return _AudioResp(200, {"content-type": "audio/x-m4p", "Content-Length": "4"}, b"M4PD")
 
         async def get(self, url, params=None, timeout=10.0):
+            if "itunes.apple.com/vn/rss/topsongs" in url:
+                return _FakeResp(200, json_data={
+                    "feed": {"entry": [{
+                        "im:name": {"label": "Top Hit VN"},
+                        "im:artist": {"label": "Ca Sĩ VN"},
+                        "im:image": [{"label": "https://is1-ssl.mzstatic.com/top.jpg"}],
+                        "link": [
+                            {"attributes": {"rel": "alternate", "href": "https://music.apple.com/vn/song/1"}},
+                            {"attributes": {"rel": "enclosure", "href": "https://audio-ssl.itunes.apple.com/top.m4a"}},
+                        ],
+                    }]}
+                })
+            if "open.spotify.com/oembed" in url:
+                return _FakeResp(200, json_data={"title": "Blue", "thumbnail_url": "https://i.scdn.co/art.jpg"})
             if "itunes.apple.com" in url:
                 return _FakeResp(200, json_data={
                     "results": [{
@@ -199,12 +235,28 @@ def test_memories_export_zip_tools_and_sync_endpoints(isolated_data, monkeypatch
                         "link": "https://www.deezer.com/track/99",
                     }]
                 })
+            if "air-quality-api.open-meteo.com" in url:
+                return _FakeResp(200, json_data={"current": {"us_aqi": 42}})
             if "api.met.no" in url:
                 # Simulate MET Norway 500 to verify automatic fallback to Open-Meteo!
                 return _FakeResp(500, json_data={})
             if "api.open-meteo.com" in url:
                 return _FakeResp(200, json_data={
                     "current": {"temperature_2m": 28.4, "apparent_temperature": 30.2, "relative_humidity_2m": 78, "weather_code": 0, "is_day": 1}
+                })
+            if "photon.komoot.io/reverse" in url:
+                return _FakeResp(200, json_data={
+                    "features": [{
+                        "geometry": {"coordinates": [108.2285, 16.0139]},
+                        "properties": {"name": "Highlands Coffee", "osm_key": "amenity", "osm_value": "cafe", "district": "Hải Châu"},
+                    }]
+                })
+            if "photon.komoot.io/api" in url:
+                return _FakeResp(200, json_data={
+                    "features": [{
+                        "geometry": {"coordinates": [108.227, 16.061]},
+                        "properties": {"name": "Cầu Rồng", "osm_key": "tourism", "osm_value": "attraction", "city": "Đà Nẵng", "country": "Việt Nam"},
+                    }]
                 })
             if "nominatim.openstreetmap.org/reverse" in url:
                 return _FakeResp(200, json_data={
@@ -237,7 +289,7 @@ def test_memories_export_zip_tools_and_sync_endpoints(isolated_data, monkeypatch
     assert r_aud.status_code == 200
     assert r_aud.headers["content-type"] == "audio/mp4"
 
-    # Music search tool merges iTunes + Deezer fallback cleanly
+    # Music search tool merges iTunes + Deezer fallback cleanly + resolves Spotify links & trending VN
     r_music = authed.get("/api/tools/music", params={"q": "blue"})
     assert r_music.status_code == 200
     tracks = r_music.json()["tracks"]
@@ -247,22 +299,33 @@ def test_memories_export_zip_tools_and_sync_endpoints(isolated_data, monkeypatch
     assert tracks[0]["artworkProxy"].startswith("/api/media?u=")
     assert tracks[0]["previewProxy"].startswith("/api/media?u=")
 
-    # Weather tool resolves Vietnamese slang (TP.HCM) & falls back across providers + returns humidity & shortText
+    r_link = authed.get("/api/tools/music", params={"q": "https://open.spotify.com/track/abc123"})
+    assert r_link.status_code == 200
+    assert r_link.json()["tracks"][0]["title"] == "Blue"
+    assert r_link.json()["tracks"][0]["appleMusicUrl"].startswith("https://open.spotify.com/")
+
+    r_trend = authed.get("/api/tools/music/trending")
+    assert r_trend.status_code == 200
+    assert r_trend.json()["tracks"][0]["title"] == "Top Hit VN"
+
+    # Weather tool resolves Vietnamese slang (TP.HCM), falls back across providers + returns humidity, AQI & shortText
     r_w = authed.get("/api/tools/weather", params={"q": "TP.HCM"})
     assert r_w.status_code == 200
     w = r_w.json()
-    assert w["temp"] == 28 and w["humidity"] == 78 and w["symbol"] == "sun.max.fill"
-    assert "Hồ Chí Minh" in w["text"] and "Hồ Chí Minh" in w["shortText"]
+    assert w["temp"] == 28 and w["humidity"] == 78 and w["aqi"] == 42 and w["aqiLabel"] == "Tốt"
+    assert w["symbol"] == "sun.max.fill" and "Hồ Chí Minh" in w["text"] and "Hồ Chí Minh" in w["shortText"]
 
     # GPS Weather automatically reverse-geocodes city name!
     r_wgps = authed.get("/api/tools/weather", params={"lat": 16.0137, "lon": 108.2282})
     assert r_wgps.status_code == 200
     assert "Đà Nẵng" in r_wgps.json()["text"]
 
-    # Places tool: both GPS reverse-geocode & search work cleanly
+    # Places tool: GPS returns both district/city AND nearby Photon POIs (cafes), plus search works cleanly
     r_pgps = authed.get("/api/tools/places", params={"lat": 16.0137, "lon": 108.2282})
     assert r_pgps.status_code == 200
-    assert any("Hải Châu" in p["name"] for p in r_pgps.json()["places"])
+    place_names = [p["name"] for p in r_pgps.json()["places"]]
+    assert any("Hải Châu" in n for n in place_names)
+    assert "Highlands Coffee" in place_names
     r_pq = authed.get("/api/tools/places", params={"q": "Cầu Rồng"})
     assert r_pq.status_code == 200
     assert r_pq.json()["places"][0]["name"] == "Cầu Rồng"

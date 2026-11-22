@@ -101,6 +101,7 @@ MEDIA_HOST_ALLOWLIST = (
     "i.scdn.co",
     "p.scdn.co",
     "audio-ssl.itunes.apple.com",
+    "i.ytimg.com",
 )
 MEDIA_HOST_SUFFIX_ALLOWLIST = (".locketcamera.com", ".locket.cam", ".mzstatic.com", ".dzcdn.net")
 

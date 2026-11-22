@@ -135,6 +135,7 @@ export const api = {
     return res.blob();
   },
   searchMusic: (q) => request('GET', `/api/tools/music?q=${enc(q)}`),
+  trendingMusic: () => request('GET', '/api/tools/music/trending'),
   weather: ({ q, lat, lon } = {}) => {
     const params = new URLSearchParams();
     if (q) params.set('q', q);

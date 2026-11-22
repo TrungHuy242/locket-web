@@ -9,7 +9,10 @@ from urllib.parse import urlparse
 
 from . import config
 
-SUPPORTED_TYPES = ("standard", "time", "static_content", "music", "review", "location", "weather")
+SUPPORTED_TYPES = (
+    "standard", "time", "static_content", "music", "review", "location", "weather",
+    "streak", "star_sign", "locket_count",
+)
 HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 WEATHER_SYMBOLS = frozenset({
     "sun.max.fill", "cloud.sun.fill", "cloud.fill", "cloud.rain.fill",
@@ -52,7 +55,7 @@ def presets() -> list:
 def is_valid(key: Optional[str]) -> bool:
     if not key:
         return False
-    if key in ("standard", "music", "review", "location", "weather", "time"):
+    if key in ("standard", "music", "review", "location", "weather", "time", "streak", "star_sign", "locket_count"):
         return True
     return key in _raw() and _raw()[key].get("type") in SUPPORTED_TYPES
 
@@ -101,5 +104,19 @@ def sanitize_overlay_meta(raw: Optional[dict]) -> Optional[dict]:
         if sym not in WEATHER_SYMBOLS:
             sym = "sun.max.fill"
         out["weather"] = {"symbol": sym}
+
+    emoji = raw.get("emoji")
+    if isinstance(emoji, str):
+        clean_em = "".join(ch for ch in emoji.strip() if ord(ch) >= 32 and ch not in "<>\"'")[:12]
+        if clean_em:
+            out["emoji"] = clean_em
+
+    streak = raw.get("streak")
+    if isinstance(streak, (int, float)) and 0 <= int(streak) <= 99999:
+        out["streak"] = int(streak)
+
+    count = raw.get("count")
+    if isinstance(count, (int, float)) and 0 <= int(count) <= 999999:
+        out["count"] = int(count)
 
     return out or None

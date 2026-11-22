@@ -1,20 +1,16 @@
-"""Smart caption tools: resilient multi-provider Weather, Place/GPS Geocoding, and Music Search.
-
-Designed for shared-IP cloud environments (like Render Free) where any single free API
-(such as Open-Meteo) may periodically rate-limit (429) or time out:
-- Built-in Vietnam cities & slang aliases (TP.HCM, SG, HN, ĐN, Sapa...) resolve in 0 ms.
-- In-memory TTL caches cut duplicate upstream requests dramatically.
-- Multi-provider fallbacks (MET Norway -> Open-Meteo -> wttr.in for weather;
-  Nominatim -> Open-Meteo for geocoding; Nominatim -> BigDataCloud -> nearest VN city for reverse GPS;
-  iTunes -> Deezer for music) keep the tools working reliably without requiring API keys.
+"""Smart caption tools: resilient multi-provider Weather + AQI, Place/Nearby POI Geocoding,
+and Music Search + Link Resolver (Spotify/Apple Music/YouTube/SoundCloud) + VN Trending.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
+import re
 import time
 import unicodedata
 from typing import Optional
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -24,9 +20,9 @@ log = logging.getLogger(__name__)
 
 USER_AGENT = "LocketWeb/2.0 (https://locket-web-wmqv.onrender.com)"
 
-# Simple bounded in-memory TTL caches: key -> (expires_at, value)
+# Bounded in-memory TTL cache: key -> (expires_at, value)
 _CACHE: dict[str, tuple[float, object]] = {}
-_CACHE_MAX = 400
+_CACHE_MAX = 500
 
 
 def _cache_get(key: str):
@@ -57,6 +53,16 @@ def _norm(text: str) -> str:
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
     s = s.replace("đ", "d").replace(".", " ").replace("-", " ").replace(",", " ")
     return " ".join(s.split())
+
+
+def _dist_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    return 6371.0 * 2 * math.asin(min(1.0, math.sqrt(a)))
 
 
 # Built-in major Vietnamese cities & popular destinations: (canonical_name, lat, lon, aliases...)
@@ -111,24 +117,26 @@ for _name, _lat, _lon, _aliases in _VN_CITIES_RAW:
     for _al in _aliases:
         _VN_ALIAS_MAP[_norm(_al)] = (_name, _lat, _lon)
 
+_VN_ISO_CITY = {
+    "VN-HN": "Hà Nội",
+    "VN-SG": "TP. Hồ Chí Minh",
+    "VN-DN": "Đà Nẵng",
+    "VN-HP": "Hải Phòng",
+    "VN-CT": "Cần Thơ",
+    "VN-26": "Huế",
+}
+
 
 def _match_vn_city(q: str) -> Optional[tuple[str, float, float]]:
     nq = _norm(q)
-    if not nq:
-        return None
-    if nq in _VN_ALIAS_MAP:
-        return _VN_ALIAS_MAP[nq]
-    return None
+    return _VN_ALIAS_MAP.get(nq) if nq else None
 
 
 def _nearest_vn_city(lat: float, lon: float, max_km: float = 60.0) -> Optional[str]:
     best_name = None
     best_km = max_km
     for name, clat, clon, _ in _VN_CITIES_RAW:
-        dlat = math.radians(lat - clat)
-        dlon = math.radians(lon - clon)
-        a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat)) * math.cos(math.radians(clat)) * math.sin(dlon / 2) ** 2
-        km = 6371.0 * 2 * math.asin(min(1.0, math.sqrt(a)))
+        km = _dist_km(lat, lon, clat, clon)
         if km < best_km:
             best_km = km
             best_name = name
@@ -205,6 +213,36 @@ def _wttr_code_to_vi(code: int, is_day: bool = True) -> tuple[str, str]:
     return ("Nhiều mây", "cloud.fill")
 
 
+def _aqi_label(aqi: int) -> str:
+    if aqi <= 50:
+        return "Tốt"
+    if aqi <= 100:
+        return "Khá"
+    if aqi <= 150:
+        return "Trung bình"
+    if aqi <= 200:
+        return "Kém"
+    return "Xấu"
+
+
+def _poi_category(osm_key: str, osm_val: str) -> str:
+    v = (osm_val or "").lower()
+    k = (osm_key or "").lower()
+    if v in ("cafe", "coffee_shop"):
+        return "cafe"
+    if v in ("restaurant", "fast_food", "food_court", "bar", "pub", "bakery"):
+        return "food"
+    if v in ("mall", "supermarket", "department_store", "marketplace") or k == "shop":
+        return "shop"
+    if v in ("university", "school", "college", "library"):
+        return "school"
+    if v in ("park", "beach", "garden", "playground"):
+        return "park"
+    if k == "tourism" or v in ("cinema", "theatre", "stadium"):
+        return "landmark"
+    return "place"
+
+
 def _tools_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
         http2=False,
@@ -214,73 +252,105 @@ def _tools_client() -> httpx.AsyncClient:
     )
 
 
-# Nominatim sometimes mislabels suburbs in VN municipalities under neighboring towns, while ISO3166-2-lvl4 is exact
-_VN_ISO_CITY = {
-    "VN-HN": "Hà Nội",
-    "VN-SG": "TP. Hồ Chí Minh",
-    "VN-DN": "Đà Nẵng",
-    "VN-HP": "Hải Phòng",
-    "VN-CT": "Cần Thơ",
-    "VN-26": "Huế",
-}
-
-
-# --------------------------------------------------------------------------- geocoding & places
+# --------------------------------------------------------------------------- geocoding, reverse GPS & nearby POIs
 async def reverse_geocode(lat: float, lon: float) -> dict:
-    """Resolve GPS coordinates into friendly place names (neighborhood, district, city)."""
-    ck = f"rev:{round(lat, 3)}:{round(lon, 3)}"
+    """Resolve GPS coordinates into street/district/city + real nearby POIs (cafes, landmarks, parks)."""
+    ck = f"rev2:{round(lat, 3)}:{round(lon, 3)}"
     cached = _cache_get(ck)
     if cached is not None:
         return cached
 
     suggestions: list[dict] = []
+    seen: set[str] = set()
     city = ""
+
+    def _push(label: str, detail: str = "", category: str = "place", p_lat: float = lat, p_lon: float = lon) -> None:
+        lbl = (label or "").strip().strip(",")
+        key = _norm(lbl)
+        if not lbl or key in seen:
+            return
+        seen.add(key)
+        suggestions.append({
+            "name": lbl,
+            "detail": detail,
+            "city": city or lbl,
+            "category": category,
+            "lat": p_lat,
+            "lon": p_lon,
+        })
+
     async with _tools_client() as client:
-        # 1) OpenStreetMap Nominatim (great detail for Vietnamese streets, wards, districts, cities)
-        try:
-            r = await client.get(
-                "https://nominatim.openstreetmap.org/reverse",
-                params={"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 16, "addressdetails": 1, "accept-language": "vi"},
-            )
-            if r.status_code == 200:
-                data = r.json()
-                addr = data.get("address") or {}
-                city = (
-                    _VN_ISO_CITY.get((addr.get("ISO3166-2-lvl4") or "").upper())
-                    or addr.get("city")
-                    or addr.get("town")
-                    or addr.get("state")
-                    or addr.get("province")
-                    or addr.get("county")
-                    or ""
-                ).replace("Thành phố ", "")
-                district = (
-                    addr.get("city_district")
-                    or addr.get("suburb")
-                    or addr.get("quarter")
-                    or addr.get("borough")
-                    or addr.get("county")
-                    or ""
+        async def _nom():
+            try:
+                r = await client.get(
+                    "https://nominatim.openstreetmap.org/reverse",
+                    params={"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 16, "addressdetails": 1, "accept-language": "vi"},
                 )
-                road = addr.get("road") or addr.get("amenity") or data.get("name") or ""
-                seen: set[str] = set()
+                return r.json() if r.status_code == 200 else None
+            except Exception as exc:
+                log.warning("Nominatim reverse geocode failed: %s", exc)
+                return None
 
-                def _push(label: str, detail: str = "") -> None:
-                    lbl = label.strip().strip(",")
-                    if lbl and lbl.lower() not in seen:
-                        seen.add(lbl.lower())
-                        suggestions.append({"name": lbl, "detail": detail, "city": city or lbl, "lat": lat, "lon": lon})
+        async def _photon():
+            try:
+                r = await client.get(
+                    "https://photon.komoot.io/reverse",
+                    params={"lat": lat, "lon": lon, "limit": 10, "radius": 0.9},
+                    timeout=5.0,
+                )
+                return r.json() if r.status_code == 200 else None
+            except Exception as exc:
+                log.warning("Photon reverse POI failed: %s", exc)
+                return None
 
-                if road and district and road.lower() != district.lower():
-                    _push(f"{road}, {district}", city)
-                if district and city and district.lower() != city.lower():
-                    _push(f"{district}, {city}", "Quận / Khu vực")
-                if city:
-                    _push(city, "Thành phố")
-        except Exception as exc:
-            log.warning("Nominatim reverse geocode failed: %s", exc)
+        nom_data, photon_data = await asyncio.gather(_nom(), _photon())
 
-        # 2) BigDataCloud client reverse geocode fallback (very fast, high cloud rate limits)
+        if isinstance(nom_data, dict):
+            addr = nom_data.get("address") or {}
+            city = (
+                _VN_ISO_CITY.get((addr.get("ISO3166-2-lvl4") or "").upper())
+                or addr.get("city")
+                or addr.get("town")
+                or addr.get("state")
+                or addr.get("province")
+                or addr.get("county")
+                or ""
+            ).replace("Thành phố ", "")
+            district = (
+                addr.get("city_district")
+                or addr.get("suburb")
+                or addr.get("quarter")
+                or addr.get("borough")
+                or addr.get("county")
+                or ""
+            )
+            road = addr.get("road") or addr.get("amenity") or nom_data.get("name") or ""
+            if district and city and _norm(district) != _norm(city):
+                _push(f"{district}, {city}", "Khu vực hiện tại", "area")
+            if city:
+                _push(city, "Thành phố", "city")
+            if road and district and _norm(road) != _norm(district):
+                _push(f"{road}, {district}", city, "street")
+
+        # Add nearby named POIs from Photon (cafes, landmarks, parks, malls, streets)
+        if isinstance(photon_data, dict):
+            for feat in photon_data.get("features") or []:
+                props = feat.get("properties") or {}
+                coords = (feat.get("geometry") or {}).get("coordinates") or [lon, lat]
+                pname = (props.get("name") or "").strip()
+                if not pname or len(pname) < 2:
+                    continue
+                plon, plat = float(coords[0]), float(coords[1])
+                d_m = int(round(_dist_km(lat, lon, plat, plon) * 1000))
+                cat = _poi_category(props.get("osm_key", ""), props.get("osm_value", ""))
+                dist_txt = f"~{d_m}m" if d_m < 1000 else f"~{d_m / 1000:.1f}km"
+                sub = props.get("district") or props.get("street") or city
+                detail = " · ".join(p for p in (dist_txt, sub) if p)
+                _push(pname, detail, cat, plat, plon)
+                if len(suggestions) >= 10:
+                    break
+
+        # Fallback: BigDataCloud if still missing city
         if not suggestions:
             try:
                 r = await client.get(
@@ -291,33 +361,33 @@ async def reverse_geocode(lat: float, lon: float) -> dict:
                     data = r.json()
                     city = (data.get("city") or data.get("principalSubdivision") or "").replace("Thành phố ", "")
                     loc = data.get("locality") or ""
-                    if loc and city and loc.lower() != city.lower():
-                        suggestions.append({"name": f"{loc}, {city}", "detail": "Khu vực hiện tại", "city": city, "lat": lat, "lon": lon})
+                    if loc and city and _norm(loc) != _norm(city):
+                        _push(f"{loc}, {city}", "Khu vực hiện tại", "area")
                     if city:
-                        suggestions.append({"name": city, "detail": "Thành phố", "city": city, "lat": lat, "lon": lon})
+                        _push(city, "Thành phố", "city")
             except Exception as exc:
                 log.warning("BigDataCloud reverse geocode failed: %s", exc)
 
-    # 3) Built-in nearest Vietnamese city offline fallback
     if not city:
         near = _nearest_vn_city(lat, lon)
         if near:
             city = near
             if not suggestions:
-                suggestions.append({"name": near, "detail": "Vị trí gần nhất", "city": near, "lat": lat, "lon": lon})
+                _push(near, "Thành phố gần nhất", "city")
 
     result = {"city": city, "places": suggestions}
-    _cache_set(ck, result, 6 * 3600)
+    _cache_set(ck, result, 1800)
     return result
 
 
-async def search_places(q: str, limit: int = 6) -> list[dict]:
-    """Search cities, landmarks, cafes, districts (offline VN cities + Nominatim + Open-Meteo)."""
+async def search_places(q: str, lat: Optional[float] = None, lon: Optional[float] = None, limit: int = 8) -> list[dict]:
+    """Search cities, cafes, landmarks, districts (offline VN cities + GPS-biased Photon + Nominatim + Open-Meteo)."""
     cleaned = (q or "").strip()
     if not cleaned:
         return []
     nq = _norm(cleaned)
-    ck = f"places:{nq}:{limit}"
+    bias_key = f"{round(lat, 2)}:{round(lon, 2)}" if (lat is not None and lon is not None) else "none"
+    ck = f"places2:{nq}:{bias_key}:{limit}"
     cached = _cache_get(ck)
     if cached is not None:
         return cached
@@ -325,49 +395,81 @@ async def search_places(q: str, limit: int = 6) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
 
-    def _add(name: str, detail: str, city: str, lat: float, lon: float) -> None:
+    def _add(name: str, detail: str, city: str, plat: float, plon: float, category: str = "place") -> None:
         key = _norm(f"{name} {detail}")
         if not name or key in seen:
             return
         seen.add(key)
-        out.append({"name": name, "detail": detail, "city": city or name, "lat": lat, "lon": lon})
+        out.append({"name": name, "detail": detail, "city": city or name, "category": category, "lat": plat, "lon": plon})
 
     # 1) Instant exact / prefix matches from built-in VN cities
     exact = _match_vn_city(cleaned)
     if exact:
-        _add(exact[0], "Việt Nam", exact[0], exact[1], exact[2])
+        _add(exact[0], "Việt Nam", exact[0], exact[1], exact[2], "city")
     else:
         for cname, clat, clon, aliases in _VN_CITIES_RAW:
             if nq in _norm(cname) or any(nq in _norm(a) for a in aliases):
-                _add(cname, "Việt Nam", cname, clat, clon)
-                if len(out) >= 3:
+                _add(cname, "Việt Nam", cname, clat, clon, "city")
+                if len(out) >= 2:
                     break
 
     async with _tools_client() as client:
-        # 2) OpenStreetMap Nominatim (great for specific places, landmarks, streets, cafes in VN & worldwide)
+        # 2) Photon fast autocomplete (supports lat/lon proximity bias for local cafes & spots!)
         try:
-            r = await client.get(
-                "https://nominatim.openstreetmap.org/search",
-                params={"q": cleaned, "format": "jsonv2", "addressdetails": 1, "accept-language": "vi", "limit": limit},
-            )
+            p_params = {"q": cleaned, "limit": limit}
+            if lat is not None and lon is not None:
+                p_params["lat"] = round(lat, 4)
+                p_params["lon"] = round(lon, 4)
+            r = await client.get("https://photon.komoot.io/api", params=p_params, timeout=5.0)
             if r.status_code == 200:
-                for item in r.json() or []:
-                    addr = item.get("address") or {}
-                    primary = (item.get("name") or "").strip()
-                    city = (addr.get("city") or addr.get("town") or addr.get("state") or addr.get("province") or "").replace("Thành phố ", "")
-                    district = addr.get("city_district") or addr.get("suburb") or addr.get("county") or ""
-                    country = addr.get("country") or ""
-                    if not primary:
-                        primary = (item.get("display_name") or "").split(",")[0].strip()
-                    parts = [p for p in (district, city, country) if p and _norm(p) != _norm(primary)]
+                for feat in r.json().get("features") or []:
+                    props = feat.get("properties") or {}
+                    coords = (feat.get("geometry") or {}).get("coordinates") or [0, 0]
+                    name = (props.get("name") or "").strip()
+                    if not name:
+                        continue
+                    city = (props.get("city") or props.get("state") or "").replace("Thành phố ", "")
+                    district = props.get("district") or props.get("street") or ""
+                    country = props.get("country") or ""
+                    parts = [p for p in (district, city, country) if p and _norm(p) != _norm(name)]
                     detail = ", ".join(dict.fromkeys(parts))[:80]
-                    _add(primary, detail, city or primary, float(item["lat"]), float(item["lon"]))
+                    cat = _poi_category(props.get("osm_key", ""), props.get("osm_value", ""))
+                    _add(name, detail, city or name, float(coords[1]), float(coords[0]), cat)
                     if len(out) >= limit:
                         break
         except Exception as exc:
-            log.warning("Nominatim place search failed for %r: %s", cleaned, exc)
+            log.warning("Photon search failed for %r: %s", cleaned, exc)
 
-        # 3) Open-Meteo Geocoding fallback if still empty
+        # 3) Nominatim fallback / supplement
+        if len(out) < 3:
+            try:
+                r = await client.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={"q": cleaned, "format": "jsonv2", "addressdetails": 1, "accept-language": "vi", "limit": limit},
+                )
+                if r.status_code == 200:
+                    for item in r.json() or []:
+                        addr = item.get("address") or {}
+                        primary = (item.get("name") or "").strip() or (item.get("display_name") or "").split(",")[0].strip()
+                        city = (
+                            _VN_ISO_CITY.get((addr.get("ISO3166-2-lvl4") or "").upper())
+                            or addr.get("city")
+                            or addr.get("town")
+                            or addr.get("state")
+                            or addr.get("province")
+                            or ""
+                        ).replace("Thành phố ", "")
+                        district = addr.get("city_district") or addr.get("suburb") or addr.get("county") or ""
+                        country = addr.get("country") or ""
+                        parts = [p for p in (district, city, country) if p and _norm(p) != _norm(primary)]
+                        detail = ", ".join(dict.fromkeys(parts))[:80]
+                        _add(primary, detail, city or primary, float(item["lat"]), float(item["lon"]))
+                        if len(out) >= limit:
+                            break
+            except Exception as exc:
+                log.warning("Nominatim place search failed for %r: %s", cleaned, exc)
+
+        # 4) Open-Meteo Geocoding last resort
         if not out:
             try:
                 r = await client.get(
@@ -378,19 +480,42 @@ async def search_places(q: str, limit: int = 6) -> list[dict]:
                     for item in r.json().get("results") or []:
                         name = (item.get("name") or "").strip()
                         detail = ", ".join(p for p in (item.get("admin1"), item.get("country")) if p)
-                        _add(name, detail, name, float(item["latitude"]), float(item["longitude"]))
+                        _add(name, detail, name, float(item["latitude"]), float(item["longitude"]), "city")
             except Exception as exc:
                 log.warning("Open-Meteo geocoding failed for %r: %s", cleaned, exc)
 
     result = out[:limit]
     if result:
-        _cache_set(ck, result, 24 * 3600)
+        _cache_set(ck, result, 12 * 3600)
     return result
 
 
-# --------------------------------------------------------------------------- weather
+# --------------------------------------------------------------------------- weather + AQI
+async def _fetch_aqi(client: httpx.AsyncClient, lat: float, lon: float) -> Optional[dict]:
+    ck = f"aqi:{round(lat, 2)}:{round(lon, 2)}"
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+    try:
+        r = await client.get(
+            "https://air-quality-api.open-meteo.com/v1/air-quality",
+            params={"latitude": round(lat, 4), "longitude": round(lon, 4), "current": "us_aqi"},
+            timeout=3.5,
+        )
+        if r.status_code == 200:
+            val = (r.json().get("current") or {}).get("us_aqi")
+            if isinstance(val, (int, float)):
+                aqi = int(round(val))
+                res = {"aqi": aqi, "aqiLabel": _aqi_label(aqi)}
+                _cache_set(ck, res, 1800)
+                return res
+    except Exception:
+        pass
+    return None
+
+
 async def lookup_weather(q: str = "", lat: Optional[float] = None, lon: Optional[float] = None) -> dict:
-    """Fetch live weather via MET Norway -> Open-Meteo -> wttr.in with caching & VN city resolution."""
+    """Fetch live weather + optional AQI via MET Norway -> Open-Meteo -> wttr.in with caching & VN city lookup."""
     city = (q or "").strip()
 
     if lat is None or lon is None:
@@ -410,13 +535,15 @@ async def lookup_weather(q: str = "", lat: Optional[float] = None, lon: Optional
         rev = await reverse_geocode(lat, lon)
         city = rev.get("city") or ""
 
-    ck = f"wx:{round(lat, 2)}:{round(lon, 2)}"
+    ck = f"wx2:{round(lat, 2)}:{round(lon, 2)}"
     forecast = _cache_get(ck)
 
     if forecast is None:
         errors: list[str] = []
         async with _tools_client() as client:
-            # Provider 1: MET Norway (reliable on cloud servers, zero API key, rich current conditions)
+            aqi_task = asyncio.create_task(_fetch_aqi(client, lat, lon))
+
+            # Provider 1: MET Norway
             try:
                 r = await client.get(
                     "https://api.met.no/weatherapi/locationforecast/2.0/compact",
@@ -487,9 +614,13 @@ async def lookup_weather(q: str = "", lat: Optional[float] = None, lon: Optional
                     errors.append(f"wttr:{exc}")
                     log.warning("Weather provider wttr.in failed: %s", exc)
 
-        if forecast is None:
-            raise RuntimeError(f"Không lấy được dữ liệu thời tiết ({'; '.join(errors)[:120]}).")
-        _cache_set(ck, forecast, 600)
+            aqi_info = await aqi_task
+            if forecast is None:
+                raise RuntimeError(f"Không lấy được dữ liệu thời tiết ({'; '.join(errors)[:120]}).")
+            if aqi_info:
+                forecast["aqi"] = aqi_info["aqi"]
+                forecast["aqiLabel"] = aqi_info["aqiLabel"]
+            _cache_set(ck, forecast, 600)
 
     temp = forecast["temp"]
     desc = forecast["desc"]
@@ -500,20 +631,136 @@ async def lookup_weather(q: str = "", lat: Optional[float] = None, lon: Optional
         "temp": temp,
         "feelsLike": forecast.get("feelsLike", temp),
         "humidity": forecast.get("humidity"),
+        "aqi": forecast.get("aqi"),
+        "aqiLabel": forecast.get("aqiLabel"),
         "desc": desc,
         "symbol": sym,
         "city": city,
+        "lat": round(lat, 4),
+        "lon": round(lon, 4),
         "text": full_label,
         "shortText": short_label,
     }
 
 
-# --------------------------------------------------------------------------- music search
-async def search_music(q: str, limit: int = 12) -> list[dict]:
-    """Search songs via iTunes Search API + Deezer fallback (with 30s audio preview & cover art)."""
+# --------------------------------------------------------------------------- music search, link resolver & VN trending
+_MUSIC_URL_RE = re.compile(r"^https?://", re.I)
+_TITLE_NOISE_RE = re.compile(
+    r"(\[[^\]]*\]|\((?:official|mv|video|lyric|lyrics|audio|visualizer|hd|4k)[^)]*\)|\bofficial\s*(?:music\s*)?(?:mv|video|audio|lyric(?:s)?)\b|\|.*$)",
+    re.I,
+)
+
+
+def _clean_song_query(title: str, author: str = "") -> str:
+    clean = _TITLE_NOISE_RE.sub(" ", title or "")
+    clean = re.sub(r"[-–—|]+", " ", clean)
+    clean = " ".join(clean.split()).strip()
+    if author:
+        au = re.sub(r"\b(official|vevo|topic|channel|music)\b", "", author, flags=re.I).strip()
+        if au and _norm(au) not in _norm(clean):
+            clean = f"{clean} {au}"
+    return clean[:90]
+
+
+def _itunes_item_to_track(it: dict, idx: int = 0) -> Optional[dict]:
+    title = (it.get("trackName") or "").strip()
+    artist = (it.get("artistName") or "").strip()
+    if not title:
+        return None
+    artwork = (it.get("artworkUrl100") or it.get("artworkUrl60") or "").replace("100x100bb", "200x200bb")
+    preview = (it.get("previewUrl") or "").strip()
+    return {
+        "id": f"it-{it.get('trackId') or idx}",
+        "title": title,
+        "artist": artist,
+        "artwork": artwork,
+        "artworkProxy": proxied(artwork) if artwork else None,
+        "previewUrl": preview,
+        "previewProxy": proxied(preview) if preview else None,
+        "appleMusicUrl": (it.get("trackViewUrl") or "").strip(),
+        "source": "itunes",
+    }
+
+
+async def _resolve_music_link(url: str) -> list[dict]:
+    """Resolve a pasted Spotify / Apple Music / YouTube / SoundCloud URL into playable tracks."""
+    parsed = urlparse(url.strip())
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not host:
+        return []
+
+    async with _tools_client() as client:
+        # 1) Apple Music direct ID lookup (100% exact track + permanent preview!)
+        if "music.apple.com" in host:
+            qs = parse_qs(parsed.query)
+            track_id = (qs.get("i") or [None])[0]
+            if not track_id:
+                m = re.search(r"/(\d{6,})(?:$|[/?])", parsed.path)
+                track_id = m.group(1) if m else None
+            if track_id:
+                try:
+                    r = await client.get("https://itunes.apple.com/lookup", params={"id": track_id, "country": "VN"})
+                    if r.status_code == 200:
+                        rows = r.json().get("results") or []
+                        tracks = [t for idx, it in enumerate(rows) if (t := _itunes_item_to_track(it, idx))]
+                        if tracks:
+                            return tracks
+                except Exception as exc:
+                    log.warning("Apple Music link lookup failed: %s", exc)
+
+        # 2) Spotify / YouTube / SoundCloud oEmbed -> match against iTunes/Deezer for 30s preview & crisp cover
+        oembed_url = None
+        oembed_params = {"url": url.strip()}
+        if "spotify.com" in host or "spotify.link" in host:
+            oembed_url = "https://open.spotify.com/oembed"
+        elif "youtube.com" in host or "youtu.be" in host:
+            oembed_url = "https://www.youtube.com/oembed"
+            oembed_params["format"] = "json"
+        elif "soundcloud.com" in host:
+            oembed_url = "https://soundcloud.com/oembed"
+            oembed_params["format"] = "json"
+
+        if oembed_url:
+            try:
+                r = await client.get(oembed_url, params=oembed_params, timeout=6.0)
+                if r.status_code == 200:
+                    meta = r.json()
+                    raw_title = (meta.get("title") or "").strip()
+                    raw_author = (meta.get("author_name") or "").strip()
+                    thumb_url = (meta.get("thumbnail_url") or "").strip()
+                    search_q = _clean_song_query(raw_title, raw_author)
+                    matched = await search_music(search_q, limit=6, allow_url=False) if search_q else []
+                    if matched:
+                        if "spotify.com" in host:
+                            matched[0] = {**matched[0], "appleMusicUrl": url.strip()}
+                        return matched
+                    if raw_title:
+                        return [{
+                            "id": f"link-{abs(hash(url)) % 10**8}",
+                            "title": raw_title[:100],
+                            "artist": raw_author[:80],
+                            "artwork": thumb_url if thumb_url.startswith("https://") else "",
+                            "artworkProxy": proxied(thumb_url) if thumb_url.startswith("https://") else None,
+                            "previewUrl": "",
+                            "previewProxy": None,
+                            "appleMusicUrl": url.strip() if "spotify.com" in host else "",
+                            "source": "link",
+                        }]
+            except Exception as exc:
+                log.warning("Music link oEmbed failed for %s: %s", host, exc)
+    return []
+
+
+async def search_music(q: str, limit: int = 12, allow_url: bool = True) -> list[dict]:
+    """Search songs via iTunes + Deezer fallback, or resolve a pasted Spotify/Apple/YouTube/SoundCloud URL."""
     cleaned = (q or "").strip()
     if not cleaned:
         return []
+    if allow_url and _MUSIC_URL_RE.match(cleaned):
+        resolved = await _resolve_music_link(cleaned)
+        if resolved:
+            return resolved
+
     ck = f"music:{_norm(cleaned)}:{limit}"
     cached = _cache_get(ck)
     if cached is not None:
@@ -522,15 +769,17 @@ async def search_music(q: str, limit: int = 12) -> list[dict]:
     tracks: list[dict] = []
     seen: set[str] = set()
 
-    def _add(item: dict) -> None:
+    def _add(item: Optional[dict]) -> None:
+        if not item or not item.get("title"):
+            return
         key = _norm(f"{item['title']} {item['artist']}")
-        if not item["title"] or key in seen:
+        if key in seen:
             return
         seen.add(key)
         tracks.append(item)
 
     async with _tools_client() as client:
-        # 1) iTunes Search API first (permanent preview URLs & Apple Music links that Locket iOS natively supports)
+        # 1) iTunes Search API first (permanent preview URLs & Apple Music links)
         try:
             r = await client.get(
                 "https://itunes.apple.com/search",
@@ -545,28 +794,12 @@ async def search_music(q: str, limit: int = 12) -> list[dict]:
                     )
                     if r_us.status_code == 200:
                         rows = r_us.json().get("results") or []
-                for it in rows:
-                    title = (it.get("trackName") or "").strip()
-                    artist = (it.get("artistName") or "").strip()
-                    if not title:
-                        continue
-                    artwork = (it.get("artworkUrl100") or it.get("artworkUrl60") or "").replace("100x100bb", "200x200bb")
-                    preview = (it.get("previewUrl") or "").strip()
-                    _add({
-                        "id": f"it-{it.get('trackId') or len(tracks)}",
-                        "title": title,
-                        "artist": artist,
-                        "artwork": artwork,
-                        "artworkProxy": proxied(artwork) if artwork else None,
-                        "previewUrl": preview,
-                        "previewProxy": proxied(preview) if preview else None,
-                        "appleMusicUrl": (it.get("trackViewUrl") or "").strip(),
-                        "source": "itunes",
-                    })
+                for idx, it in enumerate(rows):
+                    _add(_itunes_item_to_track(it, idx))
         except Exception as exc:
             log.warning("iTunes search failed for %r: %s", cleaned, exc)
 
-        # 2) Deezer Search API fallback / supplement (MP3 previews + broad catalog if iTunes is sparse or throttled)
+        # 2) Deezer Search API fallback / supplement
         if len(tracks) < limit:
             try:
                 r = await client.get("https://api.deezer.com/search", params={"q": cleaned, "limit": limit})
@@ -599,3 +832,82 @@ async def search_music(q: str, limit: int = 12) -> list[dict]:
     if result:
         _cache_set(ck, result, 1800)
     return result
+
+
+async def trending_music(limit: int = 12) -> list[dict]:
+    """Fetch Top Trending Vietnam songs (Apple Music VN RSS -> Deezer Chart fallback), cached 2h."""
+    ck = f"music:trending:vn:{limit}"
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+
+    tracks: list[dict] = []
+    async with _tools_client() as client:
+        # 1) Apple Music Vietnam Top Songs RSS (permanent preview URLs + artwork)
+        try:
+            r = await client.get(f"https://itunes.apple.com/vn/rss/topsongs/limit={limit}/json", timeout=7.0)
+            if r.status_code == 200:
+                entries = (r.json().get("feed") or {}).get("entry") or []
+                if isinstance(entries, dict):
+                    entries = [entries]
+                for idx, e in enumerate(entries):
+                    title = ((e.get("im:name") or {}).get("label") or "").strip()
+                    artist = ((e.get("im:artist") or {}).get("label") or "").strip()
+                    imgs = e.get("im:image") or []
+                    artwork = (imgs[-1].get("label") if isinstance(imgs, list) and imgs else "") or ""
+                    links = e.get("link") or []
+                    if isinstance(links, dict):
+                        links = [links]
+                    preview = ""
+                    apple_url = ""
+                    for lk in links:
+                        attrs = lk.get("attributes") or {}
+                        if attrs.get("rel") == "enclosure" and attrs.get("href"):
+                            preview = attrs["href"]
+                        elif attrs.get("rel") == "alternate" and attrs.get("href"):
+                            apple_url = attrs["href"]
+                    if not title:
+                        continue
+                    tracks.append({
+                        "id": f"rss-{idx}-{abs(hash(title)) % 10**6}",
+                        "title": title,
+                        "artist": artist,
+                        "artwork": artwork,
+                        "artworkProxy": proxied(artwork) if artwork else None,
+                        "previewUrl": preview,
+                        "previewProxy": proxied(preview) if preview else None,
+                        "appleMusicUrl": apple_url,
+                        "source": "itunes",
+                    })
+        except Exception as exc:
+            log.warning("Apple RSS VN trending failed: %s", exc)
+
+        # 2) Deezer global/chart fallback if Apple RSS failed
+        if not tracks:
+            try:
+                r = await client.get("https://api.deezer.com/chart/0/tracks", params={"limit": limit}, timeout=7.0)
+                if r.status_code == 200:
+                    for it in r.json().get("data") or []:
+                        title = (it.get("title_short") or it.get("title") or "").strip()
+                        artist = ((it.get("artist") or {}).get("name") or "").strip()
+                        album = it.get("album") or {}
+                        artwork = (album.get("cover_medium") or album.get("cover") or "").strip()
+                        preview = (it.get("preview") or "").strip()
+                        if title:
+                            tracks.append({
+                                "id": f"dz-top-{it.get('id') or len(tracks)}",
+                                "title": title,
+                                "artist": artist,
+                                "artwork": artwork,
+                                "artworkProxy": proxied(artwork) if artwork else None,
+                                "previewUrl": preview,
+                                "previewProxy": proxied(preview) if preview else None,
+                                "appleMusicUrl": (it.get("link") or "").strip(),
+                                "source": "deezer",
+                            })
+            except Exception as exc:
+                log.warning("Deezer chart fallback failed: %s", exc)
+
+    if tracks:
+        _cache_set(ck, tracks[:limit], 7200)
+    return tracks[:limit]

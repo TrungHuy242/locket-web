@@ -53,6 +53,8 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   const [loadingFile, setLoadingFile] = useState(false);
   const clipRef = useRef(null);                        // detached <video> of the library clip
   const [preset, setPreset] = useState(null);
+  const [previewMusicPlaying, setPreviewMusicPlaying] = useState(false);
+  const previewAudioRef = useRef(null);
   const [selected, setSelected] = useState(() => new Set());
   const [sending, setSending] = useState('idle');      // idle | sending | done
   const [progress, setProgress] = useState(null);      // upload fraction 0..1, then 'processing'
@@ -198,8 +200,41 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   const digitalZoom = () => (cam.current.caps.zoom ? 1 : zoomRef.current);
   const shouldMirror = () => mirrorRef.current && getSettings().mirrorFront;
 
+  const stopPreviewMusic = useCallback(() => {
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current.currentTime = 0;
+    }
+    setPreviewMusicPlaying(false);
+  }, []);
+
+  const togglePreviewMusic = useCallback(() => {
+    const url = preset?.previewProxy;
+    if (!url) return;
+    if (!previewAudioRef.current) {
+      previewAudioRef.current = new Audio();
+      previewAudioRef.current.addEventListener('ended', () => setPreviewMusicPlaying(false));
+      previewAudioRef.current.addEventListener('error', () => {
+        setPreviewMusicPlaying(false);
+        ui.error('Không phát được đoạn nhạc này');
+      });
+    }
+    const a = previewAudioRef.current;
+    if (previewMusicPlaying && !a.paused) {
+      a.pause();
+      setPreviewMusicPlaying(false);
+      return;
+    }
+    if (a.src !== new URL(url, window.location.origin).href) a.src = url;
+    setPreviewMusicPlaying(true);
+    a.play().catch(() => { setPreviewMusicPlaying(false); ui.error('Không phát được đoạn nhạc này'); });
+  }, [preset, previewMusicPlaying]);
+
+  useEffect(() => () => stopPreviewMusic(), [stopPreviewMusic]);
+
   /* ------------------------------------------------ preview */
   const enterPreview = useCallback((media) => {
+    stopPreviewMusic();
     const next = { ...media, imageUrl: media.image ? URL.createObjectURL(media.image) : null, videoUrl: media.video ? URL.createObjectURL(media.video) : null };
     setPreview(next);
     setTrimStart(0);
@@ -212,9 +247,10 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     setPreviewFilterAmount(media.initialFilterAmount ?? 1);
     setPreviewThumbs({});
     stop();
-  }, [stop]);
+  }, [stop, stopPreviewMusic]);
 
   const exitPreview = useCallback(() => {
+    stopPreviewMusic();
     previewThumbGen.current += 1;
     setPreviewTrayOpen(false);
     setPreview((p) => {
@@ -222,7 +258,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
       return null;
     });
     if (clipRef.current) { URL.revokeObjectURL(clipRef.current.url); clipRef.current = null; }
-  }, []);
+  }, [stopPreviewMusic]);
 
   useEffect(() => { onPreviewChange(!!preview); }, [preview, onPreviewChange]);
   const prevPreviewIdRef = useRef(null);
@@ -860,10 +896,11 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
 
   const send = async () => {
     if (!preview || sending !== 'idle') return;
+    stopPreviewMusic();
     setSending('sending');
     let caption = (captionRef.current?.textContent || '').trim();
-    if (!caption && preset?.type === 'time') caption = clock(Date.now());
-    else if (!caption && preset?.text && ['music', 'review', 'location', 'weather'].includes(preset.type)) caption = preset.text;
+    if (!caption && preset?.type === 'time') caption = preset.text || clock(Date.now());
+    else if (!caption && preset?.text && ['music', 'review', 'location', 'weather', 'streak', 'star_sign', 'locket_count', 'custom'].includes(preset.type)) caption = preset.text;
     try {
       let image = preview.image;
       if (preview.library && trimStart > 0 && clipRef.current && preview.decodable) image = await stillAt(clipRef.current.v, trimStart);
@@ -911,12 +948,15 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   };
 
   const openStyles = () => {
+    stopPreviewMusic();
     const ctl = ui.sheet(() => (
       <StylePicker current={preset} onPick={(p) => {
         setPreset(p);
         if (captionRef.current) {
-          if (p && ['music', 'review', 'location', 'weather'].includes(p.type)) {
+          if (p && ['music', 'review', 'location', 'weather', 'streak', 'star_sign', 'locket_count', 'custom', 'time'].includes(p.type)) {
             captionRef.current.textContent = p.text || '';
+          } else if (!p) {
+            // keep user-typed caption when simply resetting style
           }
         }
         ctl.close();
@@ -1016,7 +1056,8 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
           <Icon name={flashOn ? 'bolt' : 'boltOff'} />
         </button>
         <button type="button" className={`vf-btn zoom ${trayOpen ? 'tucked' : ''}`} data-when="capture" aria-label="Thu phóng" onClick={() => { const z = zoom === 1 ? 2 : 1; setZoom(z); applyZoom(z); }}>{zoom}x</button>
-        <CaptionEditor preview={preview} preset={preset} placeholder={placeholder} captionRef={captionRef} onCaptionInput={onCaptionInput} />
+        <CaptionEditor preview={preview} preset={preset} placeholder={placeholder} captionRef={captionRef}
+          onCaptionInput={onCaptionInput} musicPlaying={previewMusicPlaying} onToggleMusic={togglePreviewMusic} />
       </div>
 
       <div className="cam-modes" data-when="capture" role="tablist" aria-label="Chế độ chụp">

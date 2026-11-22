@@ -146,16 +146,23 @@ function PresetIcon({ icon }) {
   return null;
 }
 
-export function CaptionEditor({ preview, preset, placeholder, captionRef, onCaptionInput }) {
+export function CaptionEditor({ preview, preset, placeholder, captionRef, onCaptionInput, musicPlaying = false, onToggleMusic }) {
   if (!preview) return null;
+  const hasMusicPreview = preset?.type === 'music' && !!preset?.previewProxy && !!onToggleMusic;
   return (
-    <div className={`caption-edit ${isColored(preset) ? 'colored' : ''}`} data-when="preview" style={preset ? overlayStyle(preset) : undefined} onClick={() => captionRef.current?.focus()}>
+    <div className={`caption-edit ${isColored(preset) ? 'colored' : ''} ${musicPlaying ? 'playing' : ''}`} data-when="preview" style={preset ? overlayStyle(preset) : undefined} onClick={() => captionRef.current?.focus()}>
       <PresetIcon icon={preset?.icon} />
       {typeof preset?.rating === 'number' ? <span className="rate">★ {preset.rating}</span> : null}
       <span ref={captionRef} className="txt" contentEditable suppressContentEditableWarning spellCheck={false} data-placeholder={placeholder}
         onInput={onCaptionInput}
         onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
         onPaste={(e) => { e.preventDefault(); document.execCommand('insertText', false, (e.clipboardData.getData('text/plain') || '').replace(/\s+/g, ' ')); }} />
+      {hasMusicPreview ? (
+        <button type="button" className="caption-play-btn" aria-label={musicPlaying ? 'Dừng nghe thử nhạc' : 'Nghe thử nhạc 30 giây'}
+          onClick={(e) => { e.stopPropagation(); onToggleMusic(); }}>
+          <Icon name={musicPlaying ? 'mute' : 'play'} />
+        </button>
+      ) : null}
     </div>
   );
 }

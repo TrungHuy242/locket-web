@@ -196,13 +196,36 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
                 overlay["alt_text"] = f"★ {rating} {data.get('text') or ''}".strip() if rating else (data.get("text") or "")
             elif oid == "caption:location":
                 data["type"] = "location"
-                data["icon"] = {"type": "sf_symbol", "data": "location.fill", "color": icon_color}
+                if meta.get("emoji"):
+                    data["icon"] = {"type": "emoji", "data": meta["emoji"]}
+                else:
+                    data["icon"] = {"type": "sf_symbol", "data": "location.fill", "color": icon_color}
                 overlay["alt_text"] = data.get("text") or ""
             elif oid == "caption:weather":
                 sym = (meta.get("weather") or {}).get("symbol") or "sun.max.fill"
                 data["type"] = "weather"
                 data["icon"] = {"type": "sf_symbol", "data": sym, "color": icon_color}
                 overlay["alt_text"] = data.get("text") or ""
+            elif oid == "caption:streak":
+                data["type"] = "streak"
+                data["icon"] = {"type": "sf_symbol", "data": "flame.fill", "color": icon_color}
+                if isinstance(meta.get("streak"), int):
+                    data["payload"] = {"streak": meta["streak"]}
+                overlay["alt_text"] = data.get("text") or ""
+            elif oid == "caption:star_sign":
+                data["type"] = "star_sign"
+                if meta.get("emoji"):
+                    data["icon"] = {"type": "emoji", "data": meta["emoji"]}
+                overlay["alt_text"] = data.get("text") or ""
+            elif oid == "caption:locket_count":
+                data["type"] = "locket_count"
+                data["icon"] = {"type": "sf_symbol", "data": "heart.fill", "color": icon_color}
+                if isinstance(meta.get("count"), int):
+                    data["payload"] = {"count": meta["count"]}
+                overlay["alt_text"] = data.get("text") or ""
+            elif oid == "caption:standard" and meta.get("emoji"):
+                data["icon"] = {"type": "emoji", "data": meta["emoji"]}
+                overlay["alt_text"] = f"{meta['emoji']} {data.get('text') or ''}".strip()
 
             if meta.get("colors"):
                 bg["colors"] = list(meta["colors"])

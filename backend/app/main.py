@@ -855,10 +855,16 @@ async def media(request: Request, u: str = Query(max_length=2000), w: Optional[i
 
 # --------------------------------------------------------------------------- smart tools & sync status
 @app.get("/api/tools/music")
-async def search_music(q: str = Query(min_length=1, max_length=100), p: Provider = Depends(current)):
-    """Search songs via iTunes + Deezer fallback for Music captions."""
+async def search_music(q: str = Query(min_length=1, max_length=300), p: Provider = Depends(current)):
+    """Search songs via iTunes + Deezer fallback or resolve pasted Spotify/Apple/YouTube/SoundCloud links."""
     tracks = await tools.search_music(q)
     return {"tracks": tracks}
+
+
+@app.get("/api/tools/music/trending")
+async def trending_music(p: Provider = Depends(current)):
+    """Return Top Trending Vietnam songs (cached 2h) for instant Music caption discovery."""
+    return {"tracks": await tools.trending_music(12)}
 
 
 @app.get("/api/tools/weather")
@@ -868,7 +874,7 @@ async def lookup_weather(
     lon: Optional[float] = Query(default=None, ge=-180, le=180),
     p: Provider = Depends(current),
 ):
-    """Fetch live weather via MET Norway -> Open-Meteo -> wttr.in with VN city lookup & GPS reverse-geocoding."""
+    """Fetch live weather + AQI via MET Norway -> Open-Meteo -> wttr.in with VN city lookup & GPS reverse-geocoding."""
     try:
         return await tools.lookup_weather(q=q, lat=lat, lon=lon)
     except ValueError as exc:
@@ -887,12 +893,12 @@ async def lookup_places(
     lon: Optional[float] = Query(default=None, ge=-180, le=180),
     p: Provider = Depends(current),
 ):
-    """Resolve GPS coordinates or search real Vietnamese/global places for Location captions."""
+    """Resolve GPS coordinates (+ nearby POIs) or search places (with optional GPS proximity bias)."""
+    if q.strip():
+        return {"places": await tools.search_places(q, lat=lat, lon=lon)}
     if lat is not None and lon is not None:
         return await tools.reverse_geocode(lat, lon)
-    if not q.strip():
-        raise HTTPException(status_code=422, detail="Nhập tên địa điểm hoặc bật vị trí.")
-    return {"places": await tools.search_places(q)}
+    raise HTTPException(status_code=422, detail="Nhập tên địa điểm hoặc bật vị trí.")
 
 
 @app.get("/api/sync/status")
