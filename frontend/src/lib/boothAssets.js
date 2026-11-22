@@ -16,6 +16,11 @@ export const STICKER_GROUPS = [
   { id: 'treats', name: 'Đồ ăn & dấu chân', items: ['strawberry', 'cherry', 'carrot', 'fish', 'bone', 'paw'] },
   { id: 'paper', name: 'Giấy & băng dính', items: ['tape-pink', 'tape-mint', 'banner', 'camera'] },
 ];
+export const EMOJI_STICKERS = [
+  '💛', '💖', '🫶', '✨', '🎀', '🦋', '🌸', '🍓', '🍒', '🧸',
+  '🐶', '🐱', '🐰', '🐾', '🫧', '🌈', '🔥', '⚡', '💫', '🎧',
+  '📷', '🎬', '☕', '🧋', '🍰', '💌', '🥰', '😎', '🥹', '✌️',
+];
 // stickers printed flat (tape, paper): no drop shadow
 export const FLAT_STICKERS = new Set(['tape-pink', 'tape-mint']);
 
@@ -56,6 +61,63 @@ export const BORDERS = [
 //          x, y (centre, 0..1 of the anchor box), w (width, fraction of the strip - or of the cell for 'cell'),
 //          rot (deg), ay (vertical anchor of the sticker, default .5), under (draw behind the photos) }
 export const TEMPLATES = [
+  {
+    id: 'photoism', name: 'Photoism', group: '1:1 Locket', bg: '#161618', texture: 'grain', side: 44, top: 112,
+    header: { h: 112, text: 'PHOTOISM · LOCKET', font: 'Space Mono', color: '#f2f2f7', size: 34 },
+    cell: { radius: 8, border: 3, borderColor: 'rgba(255,255,255,0.16)' },
+    footer: { h: 132, text: 'self portrait studio', font: 'Space Mono', color: '#a1a1a6', size: 28, date: '#8e8e93' },
+    decor: [
+      { a: 'sparkle', at: 'header', x: .1, y: .5, w: .055 },
+      { a: 'sparkle', at: 'header', x: .9, y: .5, w: .055 },
+    ],
+  },
+  {
+    id: 'magazine', name: 'Editorial Mag', group: '1:1 Locket', bg: '#f6f2ea', texture: 'paper', line: 'rgba(28,28,30,0.22)', side: 48,
+    header: { h: 132, text: 'LOCKET EDITION', font: 'Playfair Display', color: '#1c1c1e', size: 58 },
+    cell: { radius: 4, border: 0 },
+    footer: { h: 146, text: 'daily moments', font: 'Playfair Display', color: '#3a3a3c', size: 38, date: '#7c756c' },
+    decor: [
+      { a: 'stamp', at: 'footer', x: .88, y: .5, w: .11, rot: 8 },
+      { a: 'sparkle', at: 'footer', x: .12, y: .5, w: .06 },
+    ],
+  },
+  {
+    id: 'coquette', name: 'Coquette', group: '1:1 Locket', bg: ['#fff5f8', '#ffe4ef'], texture: 'linen', line: 'rgba(216,120,152,0.35)', side: 56, top: 120,
+    cell: { radius: 18, border: 8, borderColor: '#ffffff', shadow: true },
+    footer: { h: 170, text: 'so sweet', font: 'Dancing Script', color: '#c84b78', size: 58, date: '#d97fa0' },
+    decor: [
+      { a: 'bow', at: 'cell', cell: 'first', x: .5, y: .01, w: .32, ay: .65 },
+      { a: 'hearts', at: 'strip', x: .91, y: .06, w: .12, rot: 12 },
+      { a: 'cherry', at: 'footer', x: .13, y: .5, w: .13, rot: -10 },
+      { a: 'bow', at: 'footer', x: .87, y: .5, w: .15, rot: 10 },
+    ],
+  },
+  {
+    id: 'contact35', name: '35mm Contact', group: '1:1 Locket', bg: '#111112', texture: 'grain', filmHoriz: true, side: 44, top: 110,
+    cell: { radius: 3, border: 2, borderColor: '#2c2c2e' },
+    footer: { h: 124, text: 'KODAK 400 · LOCKET', font: 'Space Mono', color: '#ff9f43', size: 30, date: '#ff9f43' },
+    decor: [{ a: 'camera', at: 'footer', x: .88, y: .5, w: .1, rot: 6 }],
+  },
+  {
+    id: 'glass', name: 'Minimal Glass', group: '1:1 Locket', bg: ['#edf1f7', '#f7eff7'], side: 34, top: 96,
+    cell: { radius: 22, border: 6, borderColor: 'rgba(255,255,255,0.88)', shadow: true },
+    footer: { h: 132, text: 'little joys', font: 'Comfortaa', color: '#5c6b82', size: 38, date: '#8a97ab' },
+    decor: [
+      { a: 'sparkles', at: 'header', x: .9, y: .5, w: .09, rot: 8 },
+    ],
+  },
+  {
+    id: 'couple', name: 'Couple Diary', group: '1:1 Locket', bg: ['#ffeaf1', '#fff4e3'], pattern: 'dots', side: 54,
+    header: { h: 124, text: 'us, lately', font: 'Pacifico', color: '#d44d76', size: 48 },
+    cell: { radius: 18, border: 8, borderColor: '#ffffff', shadow: true },
+    footer: { h: 162, text: 'forever & always', font: 'Itim', color: '#c85075', size: 46, date: '#d9849e' },
+    decor: [
+      { a: 'hearts', at: 'header', x: .12, y: .5, w: .12, rot: -12 },
+      { a: 'heart', at: 'header', x: .88, y: .5, w: .09, rot: 12 },
+      { a: 'dog', at: 'footer', x: .13, y: .5, w: .14, rot: -6 },
+      { a: 'cat', at: 'footer', x: .87, y: .5, w: .14, rot: 6 },
+    ],
+  },
   {
     id: 'puppy', name: 'Puppy Love', group: 'Thú cưng', bg: '#fff3df', texture: 'paper', side: 80, top: 190,
     cell: { radius: 16, border: 8, borderColor: '#ffffff', shadow: true },

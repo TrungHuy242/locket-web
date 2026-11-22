@@ -152,11 +152,11 @@ button:focus:not(:focus-visible) { outline: none; }
 /* ------------------------------------------------------------------ layers: backdrop, sheets, dialogs, toasts */
 #layers { position: fixed; inset: 0; height: var(--vvh, 100dvh); z-index: 50; pointer-events: none; }
 #layers > * { pointer-events: auto; }
-.backdrop { position: absolute; inset: 0; background: var(--overlay); opacity: 0; transition: opacity .3s; }
+.backdrop { position: absolute; inset: 0; z-index: 65; background: var(--overlay); opacity: 0; transition: opacity .3s; }
 .backdrop.in { opacity: 1; }
 
 .sheet {
-  position: absolute; left: 0; right: 0; bottom: 0;
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 65;
   max-height: calc(100% - var(--sat) - 6px);
   display: flex; flex-direction: column;
   background: var(--bg-elevated); color: var(--label); border-radius: 34px 34px 0 0;
@@ -175,7 +175,7 @@ button:focus:not(:focus-visible) { outline: none; }
 .sheet-sub { text-align: center; color: var(--muted); font-size: 15px; padding: 0 20px 14px; }
 
 /* UIAlertController */
-.alert-wrap { position: absolute; inset: 0; display: grid; place-items: center; padding: 20px; }
+.alert-wrap { position: absolute; inset: 0; z-index: 65; display: grid; place-items: center; padding: 20px; }
 .alert {
   width: 280px; border-radius: 16px; overflow: hidden; text-align: center;
   background: var(--alert-bg); color: var(--label); box-shadow: var(--shadow);
@@ -203,7 +203,7 @@ button:focus:not(:focus-visible) { outline: none; }
 
 /* action sheet */
 .actions {
-  position: absolute; left: 8px; right: 8px; bottom: calc(var(--sab) + 4px);
+  position: absolute; left: 8px; right: 8px; bottom: calc(var(--sab) + 4px); z-index: 65;
   font-family: var(--font-system);
   transform: translateY(calc(100% + 60px)); transition: transform .42s var(--ease-ios);
 }

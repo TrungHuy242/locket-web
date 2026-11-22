@@ -12,13 +12,14 @@ import { ui } from '../ui/overlays.jsx';
 import { Spinner } from '../ui/kit.jsx';
 import { ErrorBoundary } from '../components/AppStatus.jsx';
 import { FILTERS, FilterRenderer, centerCrop, filteredCanvas, webglSupported } from '../lib/filters.js';
-import { ASPECTS, defaultOptions } from '../lib/photobooth.js';
+import { ASPECTS, defaultOptions, isSquareNative } from '../lib/photobooth.js';
+import { playBeep, playShutter } from '../lib/boothAudio.js';
 import {
   BOOTH_KEY, BOOTH_SIZE, CANVAS_RECORDING, CLIP_S, HOLD_MS, MAX_FILE_BYTES, MAX_RECORD_MS,
   PHOTO_SIZE, RING, SELF, VIDEO_BITRATE, VIDEO_SIZE,
   drawSquare, openClip, pickMime, readJSON, stillAt, toBlob,
 } from '../lib/cameraMedia.js';
-import { PhotoboothEditor, loadStyle, saveStyle } from './Photobooth.jsx';
+import { PhotoboothEditor, loadStyle } from './Photobooth.jsx';
 import { StylePicker } from './camera/StylePicker.jsx';
 import { CropSheet } from './camera/CropSheet.jsx';
 import { BoothOverlays, CaptionEditor, FilterTray, PreviewLayers, RecipientsBar } from './camera/CameraOverlays.jsx';
@@ -35,6 +36,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   const recDotRef = useRef(null);
   const captionRef = useRef(null);
   const fileRef = useRef(null);
+  const boothFileRef = useRef(null);
   const shutterRef = useRef(null);
 
   // camera state lives in a ref: it is driven by events and timers, not by renders
@@ -79,13 +81,13 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   const glActive = glOk && !glLost && filterId !== 'none';
   // photobooth
   const [mode, setMode] = useState('photo');                       // photo | booth
-  const [booth, setBooth] = useState(() => readJSON(BOOTH_KEY, { shots: 4, countdown: 3 }));
+  const [booth, setBooth] = useState(() => readJSON(BOOTH_KEY, { shots: 4, countdown: 3, sound: true }));
   const [boothStyle, setBoothStyle] = useState(() => loadStyle(defaultOptions()));
   const [boothLook, setBoothLook] = useState(null);                // filter chosen in the editor
-  const [run, setRun] = useState(null);                            // { index, total, count, done } while shooting
+  const [run, setRun] = useState(null);                            // { index, total, count, shots, manual? } while shooting
   const [boothShots, setBoothShots] = useState(null);
   const [editor, setEditor] = useState(false);
-  const boothRef = useRef({ cancel: false, takenAt: Date.now(), running: false });
+  const boothRef = useRef({ cancel: false, takenAt: Date.now(), running: false, manual: null });
   const shotsRef = useRef(null);
   shotsRef.current = boothShots;
   const editorRef = useRef(false);
@@ -395,11 +397,75 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     const v = videoRef.current;
     return filteredCanvas(v, { filter: 'none', width: BOOTH_SIZE, height: BOOTH_SIZE, crop: centerCrop(v.videoWidth, v.videoHeight, 1, digitalZoom()), mirror: shouldMirror() });
   };
+  const captureOneBoothShot = async () => {
+    const c = cam.current;
+    let undoFlash = () => {};
+    try {
+      if (flashOn) {
+        if (c.caps.torch && c.track) {
+          await c.track.applyConstraints({ advanced: [{ torch: true }] }).catch(() => {});
+          undoFlash = () => c.track?.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
+          await wait(240);
+        } else {
+          const glow = document.createElement('div');
+          glow.className = 'screen-flash';
+          document.getElementById('layers')?.appendChild(glow);
+          flashRef.current?.classList.add('hold');
+          undoFlash = () => { glow.remove(); flashRef.current?.classList.remove('hold'); };
+          await wait(260);
+        }
+      }
+      const fl = flashRef.current;
+      fl?.classList.remove('blink');
+      void fl?.offsetWidth;
+      fl?.classList.add('blink');
+      vibrate(14);
+      if (booth.sound !== false) playShutter();
+      const image = boothFrame();
+      const mini = document.createElement('canvas');
+      mini.width = mini.height = 96;
+      mini.getContext('2d').drawImage(image, 0, 0, 96, 96);
+      return { image, thumb: mini.toDataURL('image/jpeg', 0.7) };
+    } finally {
+      undoFlash();
+    }
+  };
   const runBooth = async (only = null) => {
     const b = boothRef.current;
+    // Manual shot-by-shot mode (countdown === 0): each tap takes one shot
+    if (booth.countdown === 0 && only == null) {
+      if (b.running) return;
+      b.running = true;
+      setTrayOpen(false);
+      try {
+        if (!(await waitReady())) { ui.warning('Camera chưa sẵn sàng'); return; }
+        if (!b.manual) {
+          b.takenAt = Date.now();
+          b.manual = { total: booth.shots, shots: Array(booth.shots).fill(null), nextIdx: 0 };
+        }
+        const m = b.manual;
+        const shot = await captureOneBoothShot();
+        m.shots[m.nextIdx] = shot;
+        m.nextIdx += 1;
+        if (m.nextIdx >= m.total) {
+          const finalShots = m.shots.slice();
+          b.manual = null;
+          setRun(null);
+          setBoothShots(finalShots);
+          setEditor(true);
+        } else {
+          setRun({ index: m.nextIdx, total: m.total, count: 0, shots: m.shots.slice(), manual: true });
+        }
+      } finally {
+        b.running = false;
+      }
+      return;
+    }
+
     if (b.running) return;
     b.running = true;
     b.cancel = false;
+    b.manual = null;
     setTrayOpen(false);
     const total = only == null ? booth.shots : (shotsRef.current?.length || booth.shots);
     const order = only == null ? [...Array(total).keys()] : [only];
@@ -408,25 +474,18 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     try {
       for (let k = 0; k < order.length; k++) {
         const idx = order[k];
-        for (let n = booth.countdown; n > 0; n--) {
+        for (let n = Math.max(1, booth.countdown || 3); n > 0; n--) {
           setRun({ index: idx, total, count: n, shots: shots.slice() });
           vibrate(6);
+          if (booth.sound !== false) playBeep(n === 1);
           await wait(1000);
           if (b.cancel) return;
         }
         if (!(await waitReady())) { ui.warning('Camera chưa sẵn sàng'); return; }
-        const fl = flashRef.current;
-        fl?.classList.remove('blink');
-        void fl?.offsetWidth;
-        fl?.classList.add('blink');
-        vibrate(14);
-        const image = boothFrame();
-        const mini = document.createElement('canvas');
-        mini.width = mini.height = 96;
-        mini.getContext('2d').drawImage(image, 0, 0, 96, 96);
-        shots[idx] = { ...(shots[idx] || {}), image, thumb: mini.toDataURL('image/jpeg', 0.7) };
+        const shot = await captureOneBoothShot();
+        shots[idx] = { ...(shots[idx] || {}), ...shot };
         setRun({ index: idx, total, count: 0, shots: shots.slice() });
-        await wait(k < order.length - 1 ? 900 : 450);
+        await wait(k < order.length - 1 ? 850 : 420);
         if (b.cancel) return;
       }
       setBoothShots(shots);
@@ -438,12 +497,73 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   };
   const runBoothRef = useRef(runBooth);
   runBoothRef.current = runBooth;
-  const cancelBooth = () => { boothRef.current.cancel = true; };
-  const boothRatio = (ASPECTS.find((a) => a.id === boothStyle.aspect) || ASPECTS[0]).ratio;
+  const cancelBooth = () => {
+    boothRef.current.cancel = true;
+    boothRef.current.manual = null;
+    setRun(null);
+  };
+  const finishManualBooth = () => {
+    const m = boothRef.current.manual;
+    if (!m) return;
+    const picked = m.shots.filter(Boolean);
+    boothRef.current.manual = null;
+    setRun(null);
+    if (picked.length) {
+      setBoothShots(picked);
+      setEditor(true);
+    }
+  };
+  const loadBoothFiles = async (fileList) => {
+    const isImg = (f) => f && (f.type?.startsWith('image/') || /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif)$/i.test(f.name || ''));
+    const files = Array.from(fileList || []).filter(isImg).slice(0, 6);
+    if (!files.length) return;
+    try {
+      const loaded = [];
+      for (const file of files) {
+        const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = BOOTH_SIZE;
+          drawSquare(canvas.getContext('2d'), bitmap, bitmap.width, bitmap.height, BOOTH_SIZE);
+          const mini = document.createElement('canvas');
+          mini.width = mini.height = 96;
+          mini.getContext('2d').drawImage(canvas, 0, 0, 96, 96);
+          loaded.push({ image: canvas, thumb: mini.toDataURL('image/jpeg', 0.7) });
+        } finally {
+          bitmap.close?.();
+        }
+      }
+      if (loaded.length) {
+        boothRef.current.takenAt = Date.now();
+        setBoothShots(loaded);
+        setEditor(true);
+      }
+    } catch {
+      ui.warning('Không đọc được ảnh từ thư viện');
+    }
+  };
+  const onBoothFiles = (e) => {
+    // Snapshot live FileList into an array BEFORE clearing input.value (clearing empties live FileList in Chromium!)
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    loadBoothFiles(files);
+  };
+  const boothRatio = boothStyle.outputMode !== 'print' && isSquareNative(boothStyle.layout)
+    ? 1
+    : (ASPECTS.find((a) => a.id === boothStyle.aspect) || ASPECTS[0]).ratio;
   const onBoothRetake = (which) => {
     if (which === 'all') { setBoothShots(null); setTimeout(() => runBoothRef.current(), 450); } else setTimeout(() => runBoothRef.current(which), 450);
   };
-  const onBoothPost = (blob) => { setBoothShots(null); enterPreview({ image: blob }); };
+  // Keep boothShots alive so user can click "Sửa khung" from Send Preview without losing their photos!
+  const onBoothPost = (payload) => {
+    const media = payload instanceof Blob ? { image: payload, fromBooth: true } : { ...payload, fromBooth: true };
+    enterPreview(media);
+  };
+  const onEditBoothFromPreview = () => {
+    if (!boothShots?.length) return;
+    exitPreview();
+    setEditor(true);
+  };
   const onBoothLook = useCallback((look) => setBoothLook(look), []);
 
   /* ------------------------------------------------ photo */
@@ -760,6 +880,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
       setProgress(null);
       vibrate([10, 40, 10]);
       if (getSettings().saveAfterSend) saveToDevice();
+      if (preview.fromBooth) { setBoothShots(null); setBoothLook(null); }
       await wait(700);
       exitPreview();
       onPosted(moment);
@@ -832,21 +953,29 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
           e.preventDefault();
           setDraggingFile(false);
           if (preview) return;
+          if (mode === 'booth') {
+            loadBoothFiles(e.dataTransfer?.files);
+            return;
+          }
           const file = e.dataTransfer?.files?.[0];
           if (file) openPickedFile(file);
         }}>
         <video ref={videoRef} className="live" playsInline muted autoPlay />
         <canvas ref={glRef} className="live live-gl" hidden={!glActive || !!preview} aria-hidden="true" />
-        <BoothOverlays mode={mode} preview={preview} run={run} timerCount={timerCount} booth={booth} boothRatio={boothRatio} boothAspect={boothStyle.aspect}
-          onCancel={cancelBooth} onCancelTimer={cancelTimer}
-          onToggleShots={() => setBoothOpt({ shots: booth.shots === 4 ? 3 : 4 })}
-          onCycleCountdown={() => setBoothOpt({ countdown: booth.countdown === 3 ? 5 : booth.countdown === 5 ? 10 : 3 })}
-          onCycleAspect={() => {
-            const i = ASPECTS.findIndex((a) => a.id === boothStyle.aspect);
-            const next = { ...boothStyle, aspect: ASPECTS[(i + 1) % ASPECTS.length].id };
-            setBoothStyle(next);
-            saveStyle(next);
-          }} />
+        <BoothOverlays mode={mode} preview={preview} run={run} timerCount={timerCount} booth={booth} boothRatio={boothRatio}
+          onCancel={cancelBooth} onFinishEarly={finishManualBooth} onCancelTimer={cancelTimer}
+          onToggleShots={() => {
+            const seq = [2, 3, 4, 6];
+            const idx = seq.indexOf(booth.shots);
+            setBoothOpt({ shots: seq[(idx + 1) % seq.length] });
+          }}
+          onCycleCountdown={() => {
+            const seq = [0, 2, 3, 5, 10];
+            const idx = seq.indexOf(booth.countdown);
+            setBoothOpt({ countdown: seq[(idx + 1) % seq.length] });
+          }}
+          onToggleSound={() => setBoothOpt({ sound: booth.sound === false })}
+          onPickGallery={() => boothFileRef.current?.click()} />
         <FilterTray open={preview ? previewTrayOpen : trayOpen} preview={preview} previewPhoto={!!(preview && preview.rawCanvas && !preview.video)}
           filterId={preview ? previewFilterId : filterId} filterAmount={preview ? previewFilterAmount : filterAmount}
           thumbs={preview ? previewThumbs : thumbs}
@@ -860,6 +989,8 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
           }} />
         <PreviewLayers preview={preview} shotVideoRef={shotVideoRef} soundOn={soundOn} trimStart={trimStart}
           previewTrayOpen={previewTrayOpen} canFilterPreview={!!(glOk && preview?.rawCanvas && !preview?.video)}
+          canEditBooth={!!(preview?.fromBooth && boothShots?.length)}
+          onEditBooth={onEditBoothFromPreview}
           onTogglePreviewTray={togglePreviewTray}
           onShotTime={onShotTime} onToggleSound={toggleSound} onTrim={onTrim} />
         {draggingFile ? <div className="vf-msg drop-hint"><b>Thả ảnh hoặc video vào đây</b><span>Hỗ trợ căn khung vuông & bộ lọc</span></div> : null}
@@ -893,8 +1024,9 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
         <button type="button" role="tab" aria-selected={mode === 'booth'} className={mode === 'booth' ? 'on' : ''} disabled={!!run} onClick={() => setMode('booth')}>PHOTOBOOTH</button>
       </div>
       <div className="cam-controls" data-when="capture">
-        <button type="button" className="cam-side" aria-label="Chọn ảnh hoặc video từ thư viện" onClick={() => fileRef.current?.click()}><Icon name="gallery" /></button>
-        <button ref={shutterRef} type="button" className={`shutter ${recording ? 'recording' : ''} ${mode === 'booth' ? 'booth' : ''} ${run ? 'running' : ''}`}
+        <button type="button" className="cam-side" aria-label={mode === 'booth' ? 'Chọn 2–6 ảnh ghép Photobooth' : 'Chọn ảnh hoặc video từ thư viện'}
+          onClick={() => (mode === 'booth' ? boothFileRef.current?.click() : fileRef.current?.click())}><Icon name="gallery" /></button>
+        <button ref={shutterRef} type="button" className={`shutter ${recording ? 'recording' : ''} ${mode === 'booth' ? 'booth' : ''} ${run && !run.manual ? 'running' : ''}`}
           aria-label={mode === 'booth' ? `Chụp photobooth ${booth.shots} ảnh` : 'Chạm để chụp, giữ để quay video'}
           onPointerDown={onShutterDown} onPointerUp={() => release(false)} onPointerCancel={() => release(true)}
           onContextMenu={(e) => e.preventDefault()}
@@ -928,6 +1060,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
       </button>
       <RecipientsBar user={user} friends={friends} selected={selected} onToggle={toggleRecipient} onApplyGroup={(uids) => setSelected(new Set(uids))} />
       <input ref={fileRef} type="file" accept="image/*,video/*" hidden onChange={onFile} />
+      <input ref={boothFileRef} type="file" accept="image/*" multiple hidden onChange={onBoothFiles} />
       {editor && boothShots ? (
         <ErrorBoundary inline title="Không mở được trình chỉnh sửa Photobooth" onClose={() => setEditor(false)}>
           <PhotoboothEditor shots={boothShots} takenAt={boothRef.current.takenAt}

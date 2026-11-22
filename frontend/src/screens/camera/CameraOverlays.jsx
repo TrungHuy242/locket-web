@@ -7,7 +7,22 @@ import { isColored, overlayStyle, safeColor } from '../../lib/format.js';
 import { deleteGroup, saveGroup, useGroups } from '../../lib/closeFriends.js';
 import { ui } from '../../ui/overlays.jsx';
 
-export function BoothOverlays({ mode, preview, run, timerCount, booth, boothRatio, boothAspect, onCancel, onCancelTimer, onToggleShots, onCycleCountdown, onCycleAspect }) {
+export function BoothOverlays({
+  mode,
+  preview,
+  run,
+  timerCount,
+  booth,
+  boothRatio,
+  onCancel,
+  onFinishEarly,
+  onCancelTimer,
+  onToggleShots,
+  onCycleCountdown,
+  onToggleSound,
+  onPickGallery,
+}) {
+  const readyCount = run ? run.shots.filter(Boolean).length : 0;
   return (
     <>
       {mode === 'booth' && !preview ? <div className="booth-guide" data-when="capture" style={{ '--ar': boothRatio }}><i /></div> : null}
@@ -22,14 +37,22 @@ export function BoothOverlays({ mode, preview, run, timerCount, booth, boothRati
           {Array.from({ length: run.total }, (_, i) => (
             <span key={i} className={`${i === run.index ? 'now' : ''} ${run.shots[i] ? 'done' : ''}`}>{run.shots[i] ? <img src={run.shots[i].thumb} alt="" /> : i + 1}</span>
           ))}
+          {run.manual && readyCount >= 2 ? (
+            <button type="button" className="booth-done-early" onClick={onFinishEarly}>Xong</button>
+          ) : null}
           <button type="button" className="booth-cancel" aria-label="Dừng chụp" onClick={onCancel}><Icon name="closeSm" /></button>
         </div>
       ) : null}
       {mode === 'booth' && !run && !preview ? (
         <div className="booth-bar" data-when="capture">
           <button type="button" onClick={onToggleShots}>{booth.shots} ảnh</button>
-          <button type="button" onClick={onCycleCountdown}>⏱ {booth.countdown}s</button>
-          <button type="button" onClick={onCycleAspect}>{boothAspect}</button>
+          <button type="button" onClick={onCycleCountdown}>{booth.countdown ? `⏱ ${booth.countdown}s` : '✋ Thủ công'}</button>
+          <button type="button" aria-label={booth.sound !== false ? 'Tắt âm đếm ngược' : 'Bật âm đếm ngược'} title="Âm thanh đếm ngược" onClick={onToggleSound}>
+            <Icon name={booth.sound !== false ? 'sound' : 'mute'} />
+          </button>
+          <button type="button" className="booth-gallery-pill" onClick={onPickGallery}>
+            <Icon name="gallery" /><span>Thư viện</span>
+          </button>
         </div>
       ) : null}
     </>
@@ -56,7 +79,20 @@ export function FilterTray({ open, preview, previewPhoto = false, filterId, filt
   );
 }
 
-export function PreviewLayers({ preview, shotVideoRef, soundOn, trimStart, previewTrayOpen, canFilterPreview, onTogglePreviewTray, onShotTime, onToggleSound, onTrim }) {
+export function PreviewLayers({
+  preview,
+  shotVideoRef,
+  soundOn,
+  trimStart,
+  previewTrayOpen,
+  canFilterPreview,
+  canEditBooth,
+  onEditBooth,
+  onTogglePreviewTray,
+  onShotTime,
+  onToggleSound,
+  onTrim,
+}) {
   if (!preview) return null;
   return (
     <>
@@ -67,17 +103,26 @@ export function PreviewLayers({ preview, shotVideoRef, soundOn, trimStart, previ
       ) : null}
       {preview.video ? (
         <div className="shot-tools" data-when="preview">
-          <span className="shot-len"><Icon name="play" />{mmss(preview.seconds || 0)}</span>
+          <div className="shot-tools-left">
+            <span className="shot-len"><Icon name="play" />{mmss(preview.seconds || 0)}</span>
+            {canEditBooth ? (
+              <button type="button" className="shot-edit-booth" onClick={onEditBooth}><Icon name="pencil" /><span>Sửa khung</span></button>
+            ) : null}
+          </div>
           {preview.audio !== false ? (
             <button type="button" className="vf-btn sound" aria-label={soundOn ? 'Tắt tiếng' : 'Bật tiếng'} onClick={onToggleSound}><Icon name={soundOn ? 'sound' : 'mute'} /></button>
           ) : null}
         </div>
-      ) : canFilterPreview ? (
+      ) : (canFilterPreview || canEditBooth) ? (
         <div className="shot-tools" data-when="preview">
-          <span />
-          <button type="button" className={`vf-btn sound ${previewTrayOpen ? 'on' : ''}`} aria-label="Bộ lọc ảnh" title="Đổi bộ lọc" onClick={onTogglePreviewTray}>
-            <Icon name="filters" />
-          </button>
+          {canEditBooth ? (
+            <button type="button" className="shot-edit-booth" onClick={onEditBooth}><Icon name="pencil" /><span>Sửa khung</span></button>
+          ) : <span />}
+          {canFilterPreview ? (
+            <button type="button" className={`vf-btn sound ${previewTrayOpen ? 'on' : ''}`} aria-label="Bộ lọc ảnh" title="Đổi bộ lọc" onClick={onTogglePreviewTray}>
+              <Icon name="filters" />
+            </button>
+          ) : <span />}
         </div>
       ) : null}
       {preview.library && preview.duration > CLIP_S + 0.05 ? (

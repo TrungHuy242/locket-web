@@ -44,6 +44,7 @@ uniform float u_amount;
 uniform float u_exposure, u_contrast, u_saturation, u_temp, u_tint, u_fade, u_vignette, u_grain;
 uniform float u_mono, u_split, u_vhs, u_blur, u_glow, u_flash, u_leak;
 uniform vec3 u_shadows, u_highlights;
+uniform vec3 u_adj;             // brightness (exposure EV), contrast multiplier, warmth (-1..1)
 
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 vec2 srcUV(vec2 uv) {
@@ -107,7 +108,11 @@ void main() {
     float n = hash(floor(uv * u_res / max(px, 1.0)) + fract(u_time) * 97.0) - 0.5;
     c += n * u_grain * 0.22;
   }
-  gl_FragColor = vec4(mix(orig, clamp(c, 0.0, 1.0), u_amount), 1.0);
+  vec3 outC = mix(orig, clamp(c, 0.0, 1.0), u_amount);
+  outC *= pow(2.0, u_adj.x);
+  outC = (outC - 0.5) * u_adj.y + 0.5;
+  outC += vec3(u_adj.z * 0.085, 0.0, -u_adj.z * 0.085);
+  gl_FragColor = vec4(clamp(outC, 0.0, 1.0), 1.0);
 }`;
 
 const DEFAULTS = {
@@ -186,7 +191,7 @@ export class FilterRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     this.u = {};
     ['u_tex', 'u_crop', 'u_mirror', 'u_res', 'u_texel', 'u_time', 'u_amount', 'u_exposure', 'u_contrast', 'u_saturation', 'u_temp',
-      'u_tint', 'u_fade', 'u_vignette', 'u_grain', 'u_mono', 'u_split', 'u_vhs', 'u_blur', 'u_glow', 'u_flash', 'u_leak', 'u_shadows', 'u_highlights']
+      'u_tint', 'u_fade', 'u_vignette', 'u_grain', 'u_mono', 'u_split', 'u_vhs', 'u_blur', 'u_glow', 'u_flash', 'u_leak', 'u_shadows', 'u_highlights', 'u_adj']
       .forEach((n) => { this.u[n] = gl.getUniformLocation(prog, n); });
   }
 
@@ -200,7 +205,7 @@ export class FilterRenderer {
     this.lost = true;
   }
 
-  render(source, { filter = 'none', amount = 1, crop = [0, 0, 1, 1], mirror = false, width, height, time = 0 }) {
+  render(source, { filter = 'none', amount = 1, crop = [0, 0, 1, 1], mirror = false, width, height, time = 0, adjust = null }) {
     if (!this.isAvailable()) return false;
     const { gl, canvas, u } = this;
     if (width && height && (canvas.width !== width || canvas.height !== height)) {
@@ -213,6 +218,9 @@ export class FilterRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
     const p = { ...DEFAULTS, ...filterById(filter).p };
+    const adjB = (adjust?.brightness || 0) * 0.55;
+    const adjC = 1 + (adjust?.contrast || 0) * 0.4;
+    const adjW = (adjust?.warmth || 0) * 0.7;
     gl.uniform1i(u.u_tex, 0);
     gl.uniform4f(u.u_crop, crop[0], crop[1], crop[2], crop[3]);
     gl.uniform1f(u.u_mirror, mirror ? 1 : 0);
@@ -224,19 +232,25 @@ export class FilterRenderer {
       .forEach((k) => gl.uniform1f(u[`u_${k}`], p[k]));
     gl.uniform3fv(u.u_shadows, p.shadows);
     gl.uniform3fv(u.u_highlights, p.highlights);
+    gl.uniform3f(u.u_adj, adjB, adjC, adjW);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     return !gl.isContextLost();
   }
 }
 
-// Source region (0..1) for a centred crop with aspect `aspect` (w/h), zoomed in by `zoom`.
-export function centerCrop(sw, sh, aspect = 1, zoom = 1) {
+// Source region (0..1) for a centred crop with aspect `aspect` (w/h), zoomed in by `zoom`, panned by `panX/panY` (-1..1).
+export function centerCrop(sw, sh, aspect = 1, zoom = 1, panX = 0, panY = 0) {
   let w = sw;
   let h = sw / aspect;
   if (h > sh) { h = sh; w = sh * aspect; }
-  w /= zoom;
-  h /= zoom;
-  return [(sw - w) / 2 / sw, (sh - h) / 2 / sh, w / sw, h / sh];
+  const z = Math.max(1, zoom || 1);
+  w /= z;
+  h /= z;
+  const maxX = Math.max(0, sw - w) / 2;
+  const maxY = Math.max(0, sh - h) / 2;
+  const cx = (sw - w) / 2 - Math.max(-1, Math.min(1, panX || 0)) * maxX;
+  const cy = (sh - h) / 2 - Math.max(-1, Math.min(1, panY || 0)) * maxY;
+  return [cx / sw, cy / sh, w / sw, h / sh];
 }
 
 // Offscreen renderer shared by every "apply the filter to these pixels" job.
@@ -250,36 +264,47 @@ function sharedRenderer() {
   return shared;
 }
 
-function draw2D(out, source, sw, sh, region, width, height, mirror) {
+function hasAdjust(adjust) {
+  return !!(adjust && (Math.abs(adjust.brightness || 0) > 0.005 || Math.abs(adjust.contrast || 0) > 0.005 || Math.abs(adjust.warmth || 0) > 0.005));
+}
+
+function draw2D(out, source, sw, sh, region, width, height, mirror, adjust) {
   const ctx = out.getContext('2d');
   ctx.save();
+  if (hasAdjust(adjust) && 'filter' in ctx) {
+    const b = Math.max(0.4, 1 + (adjust.brightness || 0) * 0.45);
+    const c = Math.max(0.4, 1 + (adjust.contrast || 0) * 0.4);
+    const s = Math.max(0, (adjust.warmth || 0) * 0.35);
+    ctx.filter = `brightness(${b.toFixed(2)}) contrast(${c.toFixed(2)})${s > 0 ? ` sepia(${s.toFixed(2)})` : ''}`;
+  }
   if (mirror) { ctx.translate(width, 0); ctx.scale(-1, 1); }
   ctx.drawImage(source, region[0] * sw, region[1] * sh, region[2] * sw, region[3] * sh, 0, 0, width, height);
   ctx.restore();
 }
 
 // Filtered copy of `source` as a 2D canvas of width x height (the crop keeps the aspect).
-export function filteredCanvas(source, { filter = 'none', amount = 1, width, height, crop, mirror = false }) {
+export function filteredCanvas(source, { filter = 'none', amount = 1, width, height, crop, mirror = false, adjust = null }) {
   const out = document.createElement('canvas');
   out.width = width;
   out.height = height;
   const sw = source.videoWidth || source.naturalWidth || source.width;
   const sh = source.videoHeight || source.naturalHeight || source.height;
   const region = crop || centerCrop(sw, sh, width / height);
-  if (filter === 'none' || !webglSupported()) {
-    draw2D(out, source, sw, sh, region, width, height, mirror);
+  const needGL = filter !== 'none' || hasAdjust(adjust);
+  if (!needGL || !webglSupported()) {
+    draw2D(out, source, sw, sh, region, width, height, mirror, adjust);
     return out;
   }
   try {
     const r = sharedRenderer();
-    if (r.render(source, { filter, amount, crop: region, mirror, width, height, time: Math.random() * 10 })) {
+    if (r.render(source, { filter, amount, crop: region, mirror, width, height, time: Math.random() * 10, adjust })) {
       out.getContext('2d').drawImage(r.canvas, 0, 0);
       return out;
     }
   } catch {
     if (shared) { shared.dispose(); shared = null; }
   }
-  // WebGL context lost / unavailable: fall back to the unfiltered 2D copy rather than returning black pixels
-  draw2D(out, source, sw, sh, region, width, height, mirror);
+  // WebGL context lost / unavailable: fall back to the 2D copy rather than returning black pixels
+  draw2D(out, source, sw, sh, region, width, height, mirror, adjust);
   return out;
 }

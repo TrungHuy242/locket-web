@@ -58,6 +58,14 @@ export const ICONS = {
   rotate: svg('<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>', 20),
   checkSquare: svg('<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="m8 12.2 2.8 2.8 5.2-5.5"/>', 19),
   sparkles: svg('<path d="m10 3 1.8 5.2L17 10l-5.2 1.8L10 17l-1.8-5.2L3 10l5.2-1.8zM18 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/>', 18),
+  undo: svg('<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>', 18),
+  redo: svg('<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>', 18),
+  swap: svg('<path d="M7 16 3 12l4-4M3 12h18M17 8l4 4-4 4"/>', 18),
+  flipH: svg('<path d="M12 3v18M8 7 3 12l5 5V7zM16 7l5 5-5 5V7z"/>', 18),
+  film: svg('<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 5v14M17 5v14M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/>', 18),
+  square: svg('<rect x="4" y="4" width="16" height="16" rx="4.5"/>', 18),
+  strip: svg('<rect x="7.5" y="3" width="9" height="18" rx="2"/><path d="M7.5 9h9M7.5 15h9"/>', 18),
+  type: svg('<path d="M5 7V5h14v2M12 5v14M9 19h6"/>', 18),
 };
 
 // SF Symbols that Locket captions reference by name. Unknown names render no icon rather than a guess.
