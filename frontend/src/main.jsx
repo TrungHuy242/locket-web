@@ -13,6 +13,7 @@ import './styles/friends.css';
 import './styles/notifications.css';
 import './styles/pwa.css';
 import './styles/photobooth.css';
+import './styles/captions.css';
 import './styles/motion.css';
 import { registerServiceWorker } from './lib/pwa.js';
 import { applyTheme } from './lib/settings.js';

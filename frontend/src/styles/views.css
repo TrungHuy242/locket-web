@@ -65,6 +65,11 @@
 .search { height: 46px; border-radius: 23px; background: var(--surface-2); display: flex; align-items: center; gap: 8px; padding: 0 14px; color: var(--placeholder); margin-top: 8px; }
 .search input { flex: 1; min-width: 0; height: 100%; background: none; border: 0; font-size: 17px; font-weight: 700; color: var(--label); }
 .search input::placeholder { color: var(--placeholder); }
+/* one clear button only (ours), and no focus box inside the rounded field: the field itself shows focus */
+.search input::-webkit-search-cancel-button, .search input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; display: none; }
+.search input:focus, .search input:focus-visible { outline: none; }
+.search { transition: box-shadow .2s; }
+.search:focus-within { box-shadow: 0 0 0 3px var(--gold-soft); }
 .person { display: flex; align-items: center; gap: 12px; padding: 8px 2px; }
 .person .avatar { --s: 50px; }
 .person .who { flex: 1; min-width: 0; font-size: 17px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -416,7 +416,7 @@ async def search_places(q: str, lat: Optional[float] = None, lon: Optional[float
     async with _tools_client() as client:
         # 2) Photon fast autocomplete (supports lat/lon proximity bias for local cafes & spots!)
         try:
-            p_params = {"q": cleaned, "limit": limit}
+            p_params = {"q": cleaned, "limit": limit + 4, "lang": "default"}   # "default" = local (Vietnamese) names
             if lat is not None and lon is not None:
                 p_params["lat"] = round(lat, 4)
                 p_params["lon"] = round(lon, 4)
@@ -484,6 +484,13 @@ async def search_places(q: str, lat: Optional[float] = None, lon: Optional[float
             except Exception as exc:
                 log.warning("Open-Meteo geocoding failed for %r: %s", cleaned, exc)
 
+    if lat is not None and lon is not None and out:
+        # nearest first; drop far-away namesakes (another country) when enough nearby places matched
+        for item in out:
+            item["km"] = round(_dist_km(lat, lon, item["lat"], item["lon"]), 1)
+        near = [i for i in out if i["km"] <= 300]
+        pool = near if len(near) >= 3 else out
+        out = sorted(pool, key=lambda i: (i["category"] != "city" and i["km"] > 300, i["km"]))
     result = out[:limit]
     if result:
         _cache_set(ck, result, 12 * 3600)
@@ -682,6 +689,49 @@ def _itunes_item_to_track(it: dict, idx: int = 0) -> Optional[dict]:
     }
 
 
+_VARIANT_RE = re.compile(r"\b(remix|cover|karaoke|instrumental|live|sped ?up|slowed|nightcore|acoustic|8d|beat|lofi|lo-fi)\b", re.I)
+
+
+def _rank_link_matches(tracks: list[dict], title: str, artist: str = "") -> list[dict]:
+    """Put the track a link points to first: same title, same artist, and not a remix / cover / live
+    version unless the linked title itself is one."""
+    want = _norm(_TITLE_NOISE_RE.sub(" ", title or ""))
+    who = _norm(artist or "")
+    wants_variant = bool(_VARIANT_RE.search(title or ""))
+
+    def score(t: dict) -> int:
+        tt = _norm(t.get("title") or "")
+        ta = _norm(t.get("artist") or "")
+        s = 0
+        if want and tt == want:
+            s += 6
+        elif want and (tt.startswith(want) or want.startswith(tt)):
+            s += 3
+        if not wants_variant and _VARIANT_RE.search(t.get("title") or ""):
+            s -= 6
+        if who and ta and (who in ta or ta in who):
+            s += 5
+        return s
+
+    return sorted(tracks, key=score, reverse=True)
+
+
+async def _spotify_artist(client: httpx.AsyncClient, url: str) -> str:
+    """Spotify's oEmbed has no artist; the public track page title does ("Song - song by Artist | Spotify")."""
+    try:
+        r = await client.get(url, timeout=6.0, follow_redirects=True)
+        if r.status_code != 200:
+            return ""
+        m = re.search(r"<title>(.*?)</title>", r.text, re.S | re.I)
+        if not m:
+            return ""
+        t = re.sub(r"\s+", " ", m.group(1)).replace("&amp;", "&")
+        m2 = re.search(r" - (?:song|single|album)(?: and lyrics)? by (.+?) \| Spotify", t, re.I)
+        return m2.group(1).strip()[:80] if m2 else ""
+    except Exception:
+        return ""
+
+
 async def _resolve_music_link(url: str) -> list[dict]:
     """Resolve a pasted Spotify / Apple Music / YouTube / SoundCloud URL into playable tracks."""
     parsed = urlparse(url.strip())
@@ -727,10 +777,13 @@ async def _resolve_music_link(url: str) -> list[dict]:
                     meta = r.json()
                     raw_title = (meta.get("title") or "").strip()
                     raw_author = (meta.get("author_name") or "").strip()
+                    if not raw_author and ("spotify.com" in host or "spotify.link" in host):
+                        raw_author = await _spotify_artist(client, url.strip())
                     thumb_url = (meta.get("thumbnail_url") or "").strip()
                     search_q = _clean_song_query(raw_title, raw_author)
-                    matched = await search_music(search_q, limit=6, allow_url=False) if search_q else []
+                    matched = await search_music(search_q, limit=8, allow_url=False) if search_q else []
                     if matched:
+                        matched = _rank_link_matches(matched, raw_title, raw_author)[:6]
                         if "spotify.com" in host:
                             matched[0] = {**matched[0], "appleMusicUrl": url.strip()}
                         return matched

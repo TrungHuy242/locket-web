@@ -1,30 +1,39 @@
-// Smart Caption & Style Picker shell: delegates Music, Weather, Location, and Badges/Custom Presets
-// to StylePickerPanels while handling shared gradient colors, audio preview lifecycle, and Locket presets.
+// Caption style picker (sheet). The shell owns the tab bar, the shared background colour, the audio preview
+// player and the Locket presets; Music / Weather / Location / Badges live in StylePickerPanels.
+// Every tab hands onPick the same payload shape the camera posts: { key, type, text, icon, colors, textColor, overlayMeta }.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api.js';
-import { Icon } from '../../lib/icons.jsx';
+import { Icon, SymbolIcon } from '../../lib/icons.jsx';
 import { clock, overlayStyle } from '../../lib/format.js';
+import { useSiteConfig } from '../../lib/siteConfig.js';
 import { fold } from '../../store.js';
 import { ui } from '../../ui/overlays.jsx';
-import { BadgesPanel, LocationPanel, MusicPanel, WeatherPanel } from './StylePickerPanels.jsx';
+import { BadgesPanel, LocationPanel, MusicPanel, PillPreview, WeatherPanel } from './StylePickerPanels.jsx';
 
 let presetsCache = null;
 
+// Curated, slightly muted gradients (top -> bottom, the way Locket draws a caption background).
 const GRADIENTS = [
-  { id: 'glass', name: 'Tự động / Kính mờ', colors: [], textColor: '#FFFFFF' },
-  { id: 'gold', name: 'Vàng Locket', colors: ['#FFC629', '#FF9F1C'], textColor: '#111111' },
-  { id: 'sunset', name: 'Hoàng hôn', colors: ['#FF5F6D', '#FFC371'], textColor: '#FFFFFF' },
-  { id: 'ocean', name: 'Biển xanh', colors: ['#2193B0', '#6DD5ED'], textColor: '#FFFFFF' },
-  { id: 'berry', name: 'Hồng tím', colors: ['#EC008C', '#FC6767'], textColor: '#FFFFFF' },
-  { id: 'lavender', name: 'Tím mộng mơ', colors: ['#7F00FF', '#E100FF'], textColor: '#FFFFFF' },
-  { id: 'matcha', name: 'Matcha', colors: ['#11998E', '#38EF7D'], textColor: '#0E2918' },
-  { id: 'noir', name: 'Đen tuyền', colors: ['#1C1C1E', '#2C2C2E'], textColor: '#FFFFFF' },
+  { id: 'glass', name: 'Tự động', colors: [], textColor: '#FFFFFF' },
+  { id: 'gold', name: 'Vàng Locket', colors: ['#FFD23F', '#FFAE1A'], textColor: '#1A1300' },
+  { id: 'white', name: 'Trắng', colors: ['#FFFFFF', '#ECECF1'], textColor: '#111111' },
+  { id: 'sunset', name: 'Hoàng hôn', colors: ['#FF9A6B', '#FF5F7E'], textColor: '#FFFFFF' },
+  { id: 'berry', name: 'Hồng', colors: ['#F79CC0', '#E9638F'], textColor: '#FFFFFF' },
+  { id: 'lavender', name: 'Oải hương', colors: ['#B5A1F5', '#7C68E8'], textColor: '#FFFFFF' },
+  { id: 'ocean', name: 'Biển', colors: ['#6BB8FF', '#2F7CF0'], textColor: '#FFFFFF' },
+  { id: 'matcha', name: 'Matcha', colors: ['#8ED08B', '#3E9E63'], textColor: '#FFFFFF' },
+  { id: 'noir', name: 'Đen', colors: ['#3A3A3C', '#1C1C1E'], textColor: '#FFFFFF' },
 ];
 
+const REVIEW_WORDS = ['', 'Tệ', 'Tạm được', 'Ổn', 'Ngon', 'Tuyệt vời'];
+const REVIEW_QUICK = ['Ngon xỉu', 'Đáng tiền', 'Sẽ quay lại', 'Chill phết', 'Hơi đắt', 'Không như kỳ vọng'];
+
 export function StylePicker({ onPick, current }) {
+  const smartEnabled = useSiteConfig((s) => s.features.smartCaptions);
   const [presets, setPresets] = useState(presetsCache);
   const [tab, setTab] = useState(() => {
-    if (['music', 'review', 'location', 'weather'].includes(current?.type)) return current.type;
+    if (smartEnabled && ['music', 'location', 'weather'].includes(current?.type)) return current.type;
+    if (current?.type === 'review') return 'review';
     if (['streak', 'star_sign', 'locket_count', 'custom'].includes(current?.type)) return 'badges';
     return 'presets';
   });
@@ -34,11 +43,10 @@ export function StylePicker({ onPick, current }) {
     return GRADIENTS.find((g) => JSON.stringify(g.colors) === JSON.stringify(cur)) || GRADIENTS[0];
   });
 
-  // Review state
   const [stars, setStars] = useState(current?.rating || 5);
   const [reviewText, setReviewText] = useState(current?.type === 'review' ? (current.text || '') : '');
 
-  // Shared preview audio player for Music tab
+  // one audio element shared by every preview button in the Music tab
   const [playingId, setPlayingId] = useState(null);
   const audioRef = useRef(null);
 
@@ -56,6 +64,18 @@ export function StylePicker({ onPick, current }) {
   }, []);
 
   useEffect(() => () => stopAudio(), [stopAudio]);
+
+  const tabs = useMemo(() => [
+    ['presets', 'Mẫu', <Icon key="i" name="sparkles" />],
+    ...(smartEnabled ? [
+      ['music', 'Nhạc', <Icon key="i" name="music" />],
+      ['weather', 'Thời tiết', <SymbolIcon key="i" name="cloud.sun.fill" />],
+      ['location', 'Vị trí', <SymbolIcon key="i" name="location.fill" />],
+    ] : []),
+    ['badges', 'Huy hiệu', <SymbolIcon key="i" name="flame.fill" />],
+    ['review', 'Đánh giá', <SymbolIcon key="i" name="star.fill" />],
+  ], [smartEnabled]);
+  const tabIndex = Math.max(0, tabs.findIndex(([id]) => id === tab));
 
   const switchTab = (next) => {
     if (next !== 'music') stopAudio();
@@ -118,121 +138,149 @@ export function StylePicker({ onPick, current }) {
     return [...map];
   }, [presets, query]);
 
+  const reviewPayload = {
+    key: 'review',
+    type: 'review',
+    text: reviewText.trim() || `${stars} sao`,
+    rating: stars,
+    icon: { kind: 'symbol', value: 'star.fill', color: '#FFC629' },
+    overlayMeta: { rating: stars },
+  };
+
   return (
-    <div className="styles">
-      <div className="styles-head">
-        <div className="sheet-title">Kiểu chú thích</div>
-        {current ? (
-          <button type="button" className="link-btn" onClick={() => { stopAudio(); onPick(null); }}>Gỡ kiểu</button>
+    <div className="cap">
+      <div className="cap-head">
+        <div className="cap-title">
+          <div className="sheet-title">Kiểu chú thích</div>
+          {current ? (
+            <button type="button" className="cap-remove" onClick={() => { stopAudio(); onPick(null); }}>Gỡ</button>
+          ) : null}
+        </div>
+        <div className="cap-tabs" role="tablist" style={{ '--n': tabs.length, '--i': tabIndex }}>
+          <i className="cap-tab-ind" aria-hidden="true" />
+          {tabs.map(([id, label, icon]) => (
+            <button key={id} type="button" role="tab" aria-selected={tab === id}
+              className={tab === id ? 'on' : ''} onClick={() => switchTab(id)}>
+              <span className="ti">{icon}</span>
+              <span className="tl">{label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="cap-colors">
+        <div className="cap-colors-label">Màu nền <b>{colorPick.name}</b></div>
+        <div className="cap-dots" role="radiogroup" aria-label="Màu nền chú thích">
+          {GRADIENTS.map((g) => (
+            <button key={g.id} type="button" role="radio" aria-checked={colorPick.id === g.id} aria-label={g.name}
+              className={`cap-dot ${g.colors.length ? '' : 'auto'} ${colorPick.id === g.id ? 'on' : ''}`}
+              style={g.colors.length ? { background: `linear-gradient(180deg, ${g.colors.join(', ')})` } : undefined}
+              onClick={() => setColorPick(g)}>
+              {!g.colors.length ? 'A' : null}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div key={tab} className="cap-panel">
+        {tab === 'presets' ? (
+          <>
+            <div className="search cap-search">
+              <Icon name="search" />
+              <input type="search" placeholder="Tìm mẫu chú thích" value={query}
+                onChange={(e) => setQuery(e.target.value)} autoComplete="off" spellCheck={false} />
+              {query ? <button type="button" className="x" onClick={() => setQuery('')} aria-label="Xóa"><Icon name="closeSm" /></button> : null}
+            </div>
+
+            <div className="cap-chips">
+              <button type="button" className={`cap-chip ${colorPayload ? '' : 'glass'}`}
+                style={colorPayload ? overlayStyle(colorPayload) : undefined} onClick={() => applyWithColors(null)}>
+                {colorPayload ? 'Chữ thường' : 'Chữ thường (không nền)'}
+              </button>
+            </div>
+
+            {!presets ? (
+              <div className="cap-chips">
+                {[64, 92, 78, 110, 70, 96].map((w, i) => <span key={i} className="cap-skel chip" style={{ width: w }} />)}
+              </div>
+            ) : null}
+            {presets && !filteredSections.length ? <p className="cap-empty">Không có mẫu nào khớp &ldquo;{query.trim()}&rdquo;.</p> : null}
+            {filteredSections.map(([name, list]) => (
+              <section key={name}>
+                <h4 className="cap-h">{name}</h4>
+                <div className="cap-chips">
+                  {list.map((p) => {
+                    const hasBg = (p.colors || []).length > 0 || p.bgImage;
+                    return (
+                      <button type="button" key={p.key} className={`cap-chip ${hasBg ? '' : 'glass'}`}
+                        style={hasBg ? overlayStyle(p) : undefined} onClick={() => { stopAudio(); onPick(p); }}>
+                        {p.icon && typeof p.icon === 'string' ? <span className="em">{p.icon}</span> : null}
+                        {p.type === 'time' ? clock(Date.now()) : p.text}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </>
         ) : null}
-      </div>
 
-      <div className="smart-tabs" role="tablist">
-        {[
-          ['presets', 'Mẫu', 'sparkles'],
-          ['music', 'Nhạc', 'music'],
-          ['weather', 'Thời tiết', 'cloud'],
-          ['location', 'Vị trí', 'pin'],
-          ['badges', 'Huy hiệu', 'heart'],
-          ['review', 'Đánh giá', 'star'],
-        ].map(([id, label, ic]) => (
-          <button key={id} type="button" role="tab" aria-selected={tab === id}
-            className={`chip sm ${tab === id ? 'on' : ''}`} onClick={() => switchTab(id)}>
-            <Icon name={ic} />{label}
-          </button>
-        ))}
-      </div>
+        {tab === 'music' ? (
+          <MusicPanel
+            colorPayload={colorPayload}
+            iconColor={iconColor}
+            applyWithColors={applyWithColors}
+            playingId={playingId}
+            toggleTrackPreview={toggleTrackPreview}
+            stopAudio={stopAudio}
+          />
+        ) : null}
 
-      <div className="color-strip" aria-label="Màu nền chú thích">
-        {GRADIENTS.map((g) => (
-          <button key={g.id} type="button" title={g.name}
-            className={`color-dot ${colorPick.id === g.id ? 'on' : ''}`}
-            style={g.colors.length ? { background: `linear-gradient(135deg, ${g.colors.join(', ')})` } : undefined}
-            onClick={() => setColorPick(g)}>
-            {!g.colors.length ? 'Aa' : null}
-          </button>
-        ))}
-      </div>
+        {tab === 'weather' ? (
+          <WeatherPanel colorPayload={colorPayload} iconColor={iconColor} applyWithColors={applyWithColors} />
+        ) : null}
 
-      {tab === 'presets' ? (
-        <>
-          <div className="search" style={{ marginTop: 10 }}>
-            <Icon name="search" />
-            <input type="search" placeholder="Tìm kiểu chú thích…" value={query}
-              onChange={(e) => setQuery(e.target.value)} autoComplete="off" spellCheck={false} />
-            {query ? <button type="button" className="x" onClick={() => setQuery('')} aria-label="Xóa"><Icon name="closeSm" /></button> : null}
-          </div>
+        {tab === 'location' ? (
+          <LocationPanel current={current} iconColor={iconColor} applyWithColors={applyWithColors} />
+        ) : null}
 
-          <div className="chips" style={{ marginTop: 12 }}>
-            <button type="button" className="chip" style={colorPayload ? overlayStyle(colorPayload) : undefined}
-              onClick={() => applyWithColors(null)}>
-              Aa&nbsp; {colorPayload ? `Văn bản (${colorPick.name})` : 'Văn bản mặc định'}
+        {tab === 'badges' ? (
+          <BadgesPanel colorPayload={colorPayload} applyWithColors={applyWithColors} />
+        ) : null}
+
+        {tab === 'review' ? (
+          <div className="cap-review">
+            <div className="cap-stars" role="radiogroup" aria-label="Số sao đánh giá">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button key={n <= stars ? `${n}-${stars}` : n} type="button" role="radio" aria-checked={n === stars}
+                  className={`cap-star ${n <= stars ? 'on' : ''}`} style={{ '--d': `${(n - 1) * 45}ms` }}
+                  onClick={() => setStars(n)} aria-label={`${n} sao`}>
+                  <SymbolIcon name="star.fill" />
+                </button>
+              ))}
+            </div>
+            <div className="cap-star-word">{REVIEW_WORDS[stars]}</div>
+
+            <div className="cap-field">
+              <input type="text" maxLength={80} placeholder="Nhận xét ngắn (vd: Trà sữa ngon xỉu)" value={reviewText}
+                onChange={(e) => setReviewText(e.target.value)} />
+              {reviewText ? <button type="button" className="x" aria-label="Xóa" onClick={() => setReviewText('')}><Icon name="closeSm" /></button> : null}
+            </div>
+            <div className="cap-scroll">
+              {REVIEW_QUICK.map((t) => (
+                <button key={t} type="button" className={`cap-pill-btn ${reviewText === t ? 'on' : ''}`} onClick={() => setReviewText(t)}>{t}</button>
+              ))}
+            </div>
+
+            <PillPreview style={colorPayload ? overlayStyle(colorPayload) : undefined}
+              icon={<span className="sym" style={{ color: '#FFC629' }}><SymbolIcon name="star.fill" /></span>}
+              text={reviewPayload.text} />
+            <button type="button" className="btn btn-gold cap-apply" onClick={() => applyWithColors(reviewPayload)}>
+              Dùng đánh giá {stars} sao
             </button>
           </div>
-
-          {!presets ? <div className="empty"><span className="spinner" style={{ margin: '0 auto' }} /></div> : null}
-          {presets && !filteredSections.length ? <div className="empty">Không có mẫu nào khớp &ldquo;{query.trim()}&rdquo;.</div> : null}
-          {filteredSections.map(([name, list]) => (
-            <div key={name}>
-              <h4>{name}</h4>
-              <div className="chips">
-                {list.map((p) => (
-                  <button type="button" key={p.key} className="chip" style={overlayStyle(p)} onClick={() => { stopAudio(); onPick(p); }}>
-                    {p.icon ? <span>{p.icon}</span> : null}{p.type === 'time' ? clock(Date.now()) : p.text}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-        </>
-      ) : null}
-
-      {tab === 'music' ? (
-        <MusicPanel
-          colorPayload={colorPayload}
-          iconColor={iconColor}
-          applyWithColors={applyWithColors}
-          playingId={playingId}
-          toggleTrackPreview={toggleTrackPreview}
-          stopAudio={stopAudio}
-        />
-      ) : null}
-
-      {tab === 'weather' ? (
-        <WeatherPanel colorPayload={colorPayload} iconColor={iconColor} applyWithColors={applyWithColors} />
-      ) : null}
-
-      {tab === 'location' ? (
-        <LocationPanel current={current} iconColor={iconColor} applyWithColors={applyWithColors} />
-      ) : null}
-
-      {tab === 'badges' ? (
-        <BadgesPanel colorPayload={colorPayload} applyWithColors={applyWithColors} />
-      ) : null}
-
-      {tab === 'review' ? (
-        <div className="smart-panel">
-          <div className="star-row" role="radiogroup" aria-label="Số sao đánh giá">
-            {[1, 2, 3, 4, 5].map((n) => (
-              <button key={n} type="button" className={`star-btn ${n <= stars ? 'on' : ''}`} onClick={() => setStars(n)} aria-label={`${n} sao`}>★</button>
-            ))}
-            <span className="star-val">{stars}/5</span>
-          </div>
-          <div className="field" style={{ marginTop: 12 }}>
-            <input type="text" maxLength={80} placeholder="Nhận xét ngắn (vd: Trà sữa ngon xỉu…)" value={reviewText} onChange={(e) => setReviewText(e.target.value)} />
-          </div>
-          <button type="button" className="btn btn-gold" style={{ marginTop: 14, width: '100%' }} onClick={() => applyWithColors({
-            key: 'review',
-            type: 'review',
-            text: reviewText.trim() || `${stars} sao`,
-            rating: stars,
-            icon: { kind: 'symbol', value: 'star.fill', color: '#FFC629' },
-            overlayMeta: { rating: stars },
-          })}>
-            Dùng đánh giá ★ {stars}
-          </button>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
     </div>
   );
 }
