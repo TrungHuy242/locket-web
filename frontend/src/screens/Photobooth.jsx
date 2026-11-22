@@ -708,12 +708,12 @@ export function PhotoboothEditor({
                   <div className="booth-toggles">
                     <button type="button" className={`chip ${opts.captionSafe !== false ? 'on' : ''}`}
                       onClick={() => setOpt({ captionSafe: opts.captionSafe === false })}>
-                      {opts.captionSafe !== false ? '✓ Chừa vùng Caption Locket' : 'Chừa vùng Caption Locket'}
+                      Chừa vùng caption Locket
                     </button>
                     {opts.layout === 'double' ? (
                       <button type="button" className={`chip ${opts.twinFan !== false ? 'on' : ''}`}
                         onClick={() => setOpt({ twinFan: opts.twinFan === false })}>
-                        {opts.twinFan !== false ? '✓ Xếp nghiêng 2 dải' : 'Xếp nghiêng 2 dải'}
+                        Xếp nghiêng 2 dải
                       </button>
                     ) : null}
                   </div>

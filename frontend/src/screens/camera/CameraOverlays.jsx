@@ -46,7 +46,7 @@ export function BoothOverlays({
       {mode === 'booth' && !run && !preview ? (
         <div className="booth-bar" data-when="capture">
           <button type="button" onClick={onToggleShots}>{booth.shots} ảnh</button>
-          <button type="button" onClick={onCycleCountdown}>{booth.countdown ? `⏱ ${booth.countdown}s` : '✋ Thủ công'}</button>
+          <button type="button" onClick={onCycleCountdown}>{booth.countdown ? <><Icon name="timer" />{booth.countdown}s</> : 'Thủ công'}</button>
           <button type="button" aria-label={booth.sound !== false ? 'Tắt âm đếm ngược' : 'Bật âm đếm ngược'} title="Âm thanh đếm ngược" onClick={onToggleSound}>
             <Icon name={booth.sound !== false ? 'sound' : 'mute'} />
           </button>

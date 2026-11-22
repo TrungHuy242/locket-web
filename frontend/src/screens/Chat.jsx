@@ -95,7 +95,7 @@ export function ChatList({ view }) {
             <button type="button" key={c.id} className={`conv ${c.unread ? 'unread' : ''} ${peer?.uid === c.peer.uid ? 'sel' : ''}`} onClick={() => open(c.peer)}>
               <Avatar user={c.peer} />
               <div className="grow"><b>{c.peer.name}<span>{ago(c.lastAt)}</span></b><p>{c.lastMine ? 'Bạn: ' : ''}{c.lastText || 'Đã gửi một khoảnh khắc'}</p></div>
-              {c.unread ? <i className="dot" /> : <span className="chev"><Icon name="chevRight" /></span>}
+              {c.unread ? <i className="dot" /> : null}
             </button>
           ))}
           {rows && !shownRows.length ? (
@@ -468,7 +468,7 @@ export function Thread({ peer, onBack, onChange = () => {}, embedded = false }) 
           );
         })}
         {receipt ? <div className="seen">{receipt}{lastMine ? ` · ${clock(lastMine.createdAt)}` : ''}</div> : null}
-        {status === 'ready' && !all.length ? <div className="empty" style={{ marginTop: 'auto' }}><b>{peer.name}</b>Gửi lời chào đầu tiên nào 👋</div> : null}
+        {status === 'ready' && !all.length ? <div className="empty" style={{ marginTop: 'auto' }}><b>{peer.name}</b>Gửi lời chào đầu tiên.</div> : null}
       </div>
       <div className="composer">
         <form onSubmit={send}>

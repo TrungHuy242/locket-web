@@ -50,7 +50,7 @@
 .mem-authors .cnt + .check { margin-left: 8px; }
 
 .mem-entry { width: 100%; margin-top: 16px; display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: 24px; background: var(--surface); text-align: left; cursor: pointer; }
-.mem-entry .ic { width: 42px; height: 42px; border-radius: 13px; background: var(--gold); color: #111; display: grid; place-items: center; flex: none; }
+.mem-entry .ic { width: 42px; height: 42px; border-radius: 13px; background: var(--gold-soft); color: var(--gold-text); display: grid; place-items: center; flex: none; }
 .mem-entry .grow { flex: 1; min-width: 0; }
 .mem-entry b { display: block; font-size: 17px; font-weight: 900; }
 .mem-entry small { display: block; color: var(--muted); font-size: 13px; font-weight: 700; }
@@ -131,7 +131,7 @@
 
 /* recap modal & entry */
 .recap-entry { margin-top: 10px; }
-.recap-entry .ic { background: rgba(255, 198, 41, .16); color: var(--gold); }
+
 .recap-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 14px; }
 .recap-card {
   padding: 14px; border-radius: 20px; background: var(--surface);

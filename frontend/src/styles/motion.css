@@ -1,0 +1,39 @@
+/* Light motion. Only transform and opacity (GPU-composited, no layout work), only on mount, and only for
+   the first rows of a list - long lists are never animated row by row. Everything here is switched off
+   by the prefers-reduced-motion rule in tokens.css. */
+
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+@keyframes pop { 0% { opacity: 0; transform: scale(.4); } 70% { transform: scale(1.12); } 100% { opacity: 1; transform: scale(1); } }
+@keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(255, 198, 41, .55); } 100% { box-shadow: 0 0 0 9px rgba(255, 198, 41, 0); } }
+
+/* list rows slide in one after another when a page opens */
+.conv, .nt-row, .person, .group > .cell, .mem-entry, .invite, .viewer-row, .comment-row {
+  animation: rise .44s var(--ease-ios) both;
+}
+:is(.conv, .nt-row, .person, .group > .cell, .viewer-row):nth-child(2) { animation-delay: 30ms; }
+:is(.conv, .nt-row, .person, .group > .cell, .viewer-row):nth-child(3) { animation-delay: 60ms; }
+:is(.conv, .nt-row, .person, .group > .cell, .viewer-row):nth-child(4) { animation-delay: 90ms; }
+:is(.conv, .nt-row, .person, .group > .cell, .viewer-row):nth-child(5) { animation-delay: 120ms; }
+:is(.conv, .nt-row, .person, .group > .cell, .viewer-row):nth-child(6) { animation-delay: 150ms; }
+:is(.conv, .nt-row, .person, .group > .cell, .viewer-row):nth-child(7) { animation-delay: 180ms; }
+:is(.conv, .nt-row, .person, .group > .cell, .viewer-row):nth-child(8) { animation-delay: 210ms; }
+:is(.conv, .nt-row, .person, .group > .cell, .viewer-row):nth-child(9) { animation-delay: 240ms; }
+:is(.conv, .nt-row, .person, .group > .cell, .viewer-row):nth-child(n + 10) { animation-delay: 270ms; }
+
+/* counters and unread markers */
+.badge, .count-pill, .nt-filters .chip .cnt { animation: pop .42s var(--ease-spring) both; }
+.conv .dot, .nt-dot { animation: pop .4s var(--ease-spring) both, ping 1.4s ease-out .4s 2; }
+
+/* empty / error states and the profile avatar */
+.state-ic, .nt-empty-ic { animation: pop .5s var(--ease-spring) both; }
+.profile-head .avatar-btn, .friend-profile .avatar-ring { animation: pop .55s var(--ease-spring) both; }
+
+/* chips and segmented controls ease between states instead of snapping */
+.chip { transition: transform .18s var(--ease-ios), background-color .2s, color .2s, box-shadow .2s; }
+
+/* desktop: cards lift slightly under the pointer */
+@media (hover: hover) {
+  .mem-entry, .invite, .conv, .nt-row { transition: transform .22s var(--ease-ios), background-color .15s; }
+  .mem-entry:hover, .invite:hover { transform: translateY(-2px); }
+}
+.mem-entry:active, .invite:active { transform: scale(.98); }

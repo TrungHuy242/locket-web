@@ -490,7 +490,7 @@ export function LocationPanel({ current, iconColor, applyWithColors }) {
         {PLACE_ICONS.map((ic) => (
           <button key={ic.id || 'pin'} type="button" className={`chip sm ${placeIcon === ic.id ? 'on' : ''}`}
             onClick={() => setPlaceIcon(ic.id)}>
-            {ic.emoji || '📍'} {ic.label}
+            {ic.emoji || <Icon name="pin" />} {ic.label}
           </button>
         ))}
       </div>

@@ -31,7 +31,7 @@ function RecapBody({ close }) {
       <div className="recap-cards">
         <div className="recap-card gold">
           <b>{data.myStreak}</b>
-          <span>🔥 Chuỗi ngày đăng</span>
+          <span>Chuỗi ngày đăng</span>
           <small>Kỷ lục: {data.myLongestStreak} ngày</small>
         </div>
         <div className="recap-card">

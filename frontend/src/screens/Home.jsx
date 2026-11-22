@@ -612,7 +612,7 @@ export function Home({ under }) {
             {views.length
               ? <><span className="stack">{views.slice(0, 3).map((v) => <Avatar key={v.user.uid} user={v.user} />)}</span><span>Hoạt động</span>
                 {activity[current.id]?.summary?.length ? <span className="act-emojis">{activity[current.id].summary.slice(0, 4).map((x) => x.emoji).join('')}</span> : null}</>
-              : <span>{activity[current.id] ? '✨ Chưa có hoạt động nào!' : '✨ Hoạt động'}</span>}
+              : <span>{activity[current.id] ? 'Chưa có hoạt động' : 'Xem hoạt động'}</span>}
           </button>
         ) : null}
         <nav className="feednav">

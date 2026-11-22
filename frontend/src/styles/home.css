@@ -344,7 +344,7 @@ button.caption-pill { font: inherit; font-size: 16px; font-weight: 800; cursor: 
 .smart-actions-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .smart-quick { margin-top: 10px; }
 .smart-sub-block { margin-top: 14px; }
-.smart-sub-block h4 { margin: 0 0 8px; font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); }
+.smart-sub-block h4 { margin: 0 0 8px; font-size: 13px; font-weight: 800; color: var(--faint); }
 .smart-hint { margin-top: 14px; color: var(--muted); font-size: 14px; font-weight: 600; line-height: 1.45; text-align: center; }
 .music-list, .place-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .music-row, .place-row {
