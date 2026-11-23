@@ -14,7 +14,11 @@ function serviceWorker() {
     apply: 'build',
     generateBundle(_options, bundle) {
       const template = readFileSync(new URL('./sw.template.js', import.meta.url), 'utf8');
-      const built = Object.keys(bundle).filter((f) => f.startsWith('assets/')).map((f) => `/${f}`).sort();
+      // Exclude lazy Admin chunks from SW precache so normal users never download or see Admin assets in sw.js
+      const built = Object.keys(bundle)
+        .filter((f) => f.startsWith('assets/') && !f.startsWith('assets/Admin-'))
+        .map((f) => `/${f}`)
+        .sort();
       const shell = [...STATIC, ...built];
       const version = createHash('sha256').update(template + shell.join('|')).digest('hex').slice(0, 12);
       this.emitFile({
