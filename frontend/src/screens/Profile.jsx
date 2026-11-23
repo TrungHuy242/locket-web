@@ -82,8 +82,8 @@ export function Profile({ view }) {
           <button type="button" className="avatar-btn pressable" aria-label="Đổi ảnh đại diện" onClick={pickAvatar}>
             <Avatar user={user} /><span className="edit"><Icon name="camera" /></span>
           </button>
-          <h1>{user.name}</h1>
-          <div className="handle">{user.username ? `@${user.username}` : ''}</div>
+          <h1>{user?.name || ''}</h1>
+          <div className="handle">{user?.username ? `@${user.username}` : ''}</div>
           <button type="button" className="btn btn-dark btn-sm" onClick={editName}>Sửa thông tin</button>
         </div>
 
@@ -344,9 +344,9 @@ export function Settings({ view, onSignOut }) {
       <div className="view-scroll">
         <div className="section-label"><Icon name="user" /> Tài khoản</div>
         <div className="group">
-          <button type="button" className="cell" onClick={editName}><span className="ic"><Icon name="pencil" /></span><span className="grow">Tên</span><span className="val">{user.name}</span><span className="chev"><Icon name="chevRight" /></span></button>
-          <div className="cell"><span className="ic"><Icon name="mail" /></span><span className="grow">Email</span><span className="val">{user.email || '—'}</span></div>
-          <div className="cell"><span className="ic"><Icon name="link" /></span><span className="grow">Tên người dùng</span><span className="val">{user.username ? `@${user.username}` : '—'}</span></div>
+          <button type="button" className="cell" onClick={editName}><span className="ic"><Icon name="pencil" /></span><span className="grow">Tên</span><span className="val">{user?.name || '—'}</span><span className="chev"><Icon name="chevRight" /></span></button>
+          <div className="cell"><span className="ic"><Icon name="mail" /></span><span className="grow">Email</span><span className="val">{user?.email || '—'}</span></div>
+          <div className="cell"><span className="ic"><Icon name="link" /></span><span className="grow">Tên người dùng</span><span className="val">{user?.username ? `@${user.username}` : '—'}</span></div>
         </div>
 
         <Appearance />

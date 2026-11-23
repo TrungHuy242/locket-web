@@ -496,3 +496,74 @@ def test_ops_clear_cache_prune_sessions_and_hf_sync_includes_admin(isolated_data
     assert sync2.start(api=_FakeApi()) is True
     assert cfg_file.exists()
     assert "Huy Studio" in cfg_file.read_text(encoding="utf-8")
+
+
+def test_admin_v2_user_drawer_notes_whitelist_sort_and_diagnostics(isolated_data, monkeypatch):
+    _reset_admin_limits()
+    monkeypatch.setattr(config, "ADMIN_PATH", "portal-v2-check-99")
+    monkeypatch.setattr(config, "ADMIN_PASSWORD", "v2pass")
+    monkeypatch.setattr(config, "ADMIN_EMAILS", frozenset({"boss@example.com"}))
+
+    admin_store.record_login({"uid": "u_a", "name": "An", "username": "an"}, email="an@example.com")
+    admin_store.record_login({"uid": "u_b", "name": "Binh", "username": "binh"}, email="binh@example.com")
+    admin_store.record_event("u_b", "photo")
+    admin_store.record_event("u_b", "photo")
+    admin_store.record_event("u_b", "photobooth")
+
+    c = TestClient(main.app)
+    _unlock_secret_portal(c, "portal-v2-check-99", "v2pass")
+
+    # Overview includes v2 fields: yesterday, topUsers, siteState, security, disk file counts
+    ov = c.get("/api/admin/overview").json()
+    assert "yesterday" in ov
+    assert ov["topUsers"][0]["uid"] == "u_b"
+    assert ov["siteState"]["maintenanceEnabled"] is False
+    assert ov["security"]["stealth404"] is True
+    assert ov["security"]["secretPortalEnabled"] is True
+    assert "thumbsFiles" in ov["health"]["disk"]
+
+    # Sort by moments puts u_b first
+    sorted_u = c.get("/api/admin/users", params={"sort": "moments"}).json()
+    assert sorted_u["users"][0]["uid"] == "u_b"
+
+    # Save admin note & verify searchable + returned in user detail
+    r_note = c.put("/api/admin/users/u_a/note", json={"note": "Bạn cùng lớp ĐH"}, headers=HEADERS)
+    assert r_note.status_code == 200
+    assert r_note.json()["note"] == "Bạn cùng lớp ĐH"
+    det = c.get("/api/admin/users/u_a").json()
+    assert det["note"] == "Bạn cùng lớp ĐH"
+    assert c.get("/api/admin/users", params={"q": "cùng lớp"}).json()["filtered"] == 1
+
+    # 1-tap toggle whitelist on user
+    r_wl_on = c.post("/api/admin/users/u_a/whitelist", json={"enabled": True}, headers=HEADERS)
+    assert r_wl_on.status_code == 200
+    assert r_wl_on.json()["whitelisted"] is True
+    wl_list = c.get("/api/admin/users", params={"filter": "whitelist"}).json()
+    assert wl_list["filtered"] == 1 and wl_list["users"][0]["uid"] == "u_a"
+
+    r_wl_off = c.post("/api/admin/users/u_a/whitelist", json={"enabled": False}, headers=HEADERS)
+    assert r_wl_off.json()["whitelisted"] is False
+
+    # Diagnostics probe (stub external tools for fast offline test)
+    from backend.app import tools as tools_mod
+
+    async def _fake_weather(q=""):
+        return {"city": "Hà Nội", "temp": 26, "condition": "Nắng nhẹ"}
+
+    async def _fake_music(limit=3):
+        return [{"id": "1", "title": "Song"}]
+
+    async def _fake_places(q):
+        return [{"name": "Hồ Hoàn Kiếm"}]
+
+    monkeypatch.setattr(tools_mod, "lookup_weather", _fake_weather)
+    monkeypatch.setattr(tools_mod, "trending_music", _fake_music)
+    monkeypatch.setattr(tools_mod, "search_places", _fake_places)
+
+    diag = c.post("/api/admin/ops/diagnostics", headers=HEADERS)
+    assert diag.status_code == 200
+    checks = {ch["key"]: ch for ch in diag.json()["checks"]}
+    assert checks["weather"]["ok"] is True
+    assert checks["music"]["ok"] is True
+    assert checks["places"]["ok"] is True
+

@@ -213,11 +213,14 @@ export const api = {
     login: (password) => request('POST', '/api/admin/auth/login', { password }, { quiet401: true }),
     logout: () => request('POST', '/api/admin/auth/logout'),
     overview: () => request('GET', '/api/admin/overview'),
-    users: ({ q = '', filter = 'all' } = {}) => {
-      const params = new URLSearchParams({ filter });
+    users: ({ q = '', filter = 'all', sort = 'recent' } = {}) => {
+      const params = new URLSearchParams({ filter, sort });
       if (q) params.set('q', q);
       return request('GET', `/api/admin/users?${params}`);
     },
+    userDetail: (uid) => request('GET', `/api/admin/users/${enc(uid)}`),
+    saveUserNote: (uid, note) => request('PUT', `/api/admin/users/${enc(uid)}/note`, { note }),
+    toggleUserWhitelist: (uid, enabled) => request('POST', `/api/admin/users/${enc(uid)}/whitelist`, { enabled }),
     banUser: (uid, reason = '') => request('POST', `/api/admin/users/${enc(uid)}/ban`, { reason }),
     unbanUser: (uid) => request('POST', `/api/admin/users/${enc(uid)}/unban`),
     kickUser: (uid) => request('POST', `/api/admin/users/${enc(uid)}/kick`),
@@ -231,6 +234,7 @@ export const api = {
     clearCache: (target = 'all') => request('POST', '/api/admin/ops/clear-cache', { target }),
     pruneSessions: () => request('POST', '/api/admin/ops/prune-sessions'),
     syncNow: () => request('POST', '/api/admin/ops/sync-now'),
+    diagnostics: () => request('POST', '/api/admin/ops/diagnostics'),
     logs: () => request('GET', '/api/admin/logs'),
   },
 };

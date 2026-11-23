@@ -1,6 +1,7 @@
 """Owner Admin API routes & public site configuration endpoint."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import secrets
@@ -16,7 +17,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from . import config, state_sync
+from . import config, state_sync, tools
 from .admin_store import admin_store
 from .sessions import provider_identity, store
 
@@ -239,14 +240,45 @@ class BanBody(BaseModel):
     reason: str = Field(default="", max_length=200)
 
 
+class NoteBody(BaseModel):
+    note: str = Field(default="", max_length=300)
+
+
+class WhitelistToggleBody(BaseModel):
+    enabled: bool
+
+
 @router.get("/api/admin/users")
 def admin_users(
     q: str = Query(default="", max_length=100),
-    filter: str = Query(default="all", pattern="^(all|online|today|banned)$"),
+    filter: str = Query(default="all", pattern="^(all|online|today|whitelist|banned)$"),
+    sort: str = Query(default="recent", pattern="^(recent|moments|sessions|newest)$"),
     _actor: str = Depends(require_admin),
 ):
     sessions_summary = store.active_summary()
-    return admin_store.list_users(sessions_summary, q=q, filt=filter)
+    return admin_store.list_users(sessions_summary, q=q, filt=filter, sort=sort)
+
+
+@router.get("/api/admin/users/{uid}")
+def admin_user_detail(uid: str, _actor: str = Depends(require_admin)):
+    detail = admin_store.get_user_detail(uid, store.active_summary())
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
+    return detail
+
+
+@router.put("/api/admin/users/{uid}/note")
+def admin_user_note(uid: str, body: NoteBody, actor: str = Depends(require_admin)):
+    saved = admin_store.set_user_note(uid, body.note, actor=actor)
+    return {"ok": True, "note": saved}
+
+
+@router.post("/api/admin/users/{uid}/whitelist")
+def admin_user_whitelist(uid: str, body: WhitelistToggleBody, actor: str = Depends(require_admin)):
+    detail = admin_store.get_user_detail(uid, store.active_summary())
+    email = (detail or {}).get("email") or ""
+    res = admin_store.set_user_whitelist(uid, body.enabled, actor=actor, email=email)
+    return {"ok": True, **res}
 
 
 @router.post("/api/admin/users/{uid}/ban")
@@ -387,6 +419,63 @@ async def admin_sync_now(actor: str = Depends(require_admin)):
     synced = await run_in_threadpool(state_sync.flush)
     admin_store.append_audit(actor, "ops.sync_now", detail=f"synced={bool(synced)}")
     return {"ok": True, "synced": bool(synced), "status": state_sync.status()}
+
+
+@router.post("/api/admin/ops/diagnostics")
+async def admin_diagnostics(actor: str = Depends(require_admin)):
+    """Probe external integrations (Weather, Music, Places, HF Backup) concurrently and report health + latency."""
+
+    async def _probe(key: str, label: str, coro):
+        t0 = time.perf_counter()
+        try:
+            res = await asyncio.wait_for(coro, timeout=8.0)
+            ms = round((time.perf_counter() - t0) * 1000.0)
+            return {"key": key, "label": label, "ok": True, "ms": ms, "detail": res}
+        except Exception as exc:
+            ms = round((time.perf_counter() - t0) * 1000.0)
+            return {"key": key, "label": label, "ok": False, "ms": ms, "detail": str(exc)[:140] or type(exc).__name__}
+
+    async def _check_weather():
+        w = await tools.lookup_weather(q="Hà Nội")
+        return f"{w.get('city', 'Hà Nội')} · {w.get('temp', '?')}°C ({w.get('condition', '')})"
+
+    async def _check_music():
+        tracks = await tools.trending_music(3)
+        if not tracks:
+            raise RuntimeError("Không trả về danh sách bài hát")
+        return f"Sẵn sàng ({len(tracks)} bài thịnh hành)"
+
+    async def _check_places():
+        places = await tools.search_places("Hồ Hoàn Kiếm")
+        if not places:
+            raise RuntimeError("Không tìm thấy địa điểm mẫu")
+        return f"Sẵn sàng ({len(places)} gợi ý)"
+
+    hf = state_sync.status()
+    hf_check = {
+        "key": "hf",
+        "label": "Sao lưu Hugging Face",
+        "ok": bool(hf.get("enabled") and not hf.get("lastError")),
+        "ms": 0,
+        "detail": (
+            f"Đang bật{' · Mã hóa AES' if hf.get('encrypted') else ''} · {hf.get('syncedFiles', 0)} tệp"
+            if hf.get("enabled") and not hf.get("lastError")
+            else (hf.get("lastError") or "Chưa cấu hình HF Dataset (chỉ lưu cục bộ)")
+        ),
+    }
+
+    probes = await asyncio.gather(
+        _probe("weather", "Dịch vụ Thời tiết", _check_weather()),
+        _probe("music", "Kho Nhạc thịnh hành", _check_music()),
+        _probe("places", "Tìm kiếm Địa điểm", _check_places()),
+    )
+    checks = [hf_check, *probes]
+    admin_store.append_audit(
+        actor,
+        "ops.diagnostics",
+        detail=f"ok={sum(1 for c in checks if c['ok'])}/{len(checks)}",
+    )
+    return {"checkedAt": int(time.time() * 1000), "checks": checks}
 
 
 @router.get("/api/admin/logs")

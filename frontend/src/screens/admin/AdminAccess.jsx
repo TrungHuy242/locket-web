@@ -1,19 +1,22 @@
-// Admin Access tab: Invite-Only private mode, Max Users cap, Whitelist, and Invite Code generator.
+// Admin Access & Invites v2: auto-saving Invite-Only switch, clear labels + quick-picks for Invite Codes,
+// and 1-tap shareable Messenger/Zalo invite message copy.
 import { useEffect, useState } from 'react';
 import { api } from '../../api.js';
 import { Icon } from '../../lib/icons.jsx';
-import { loadSiteConfig } from '../../lib/siteConfig.js';
+import { loadSiteConfig, useSiteConfig } from '../../lib/siteConfig.js';
 import { Button } from '../../ui/kit.jsx';
 import { ui } from '../../ui/overlays.jsx';
 
 function fmtDate(ms) {
-  if (!ms) return 'Không hết hạn';
+  if (!ms) return 'Vĩnh viễn';
   const d = new Date(ms);
   return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
 }
 
-export function AdminAccess() {
+export function AdminAccess({ onChanged }) {
+  const appName = useSiteConfig((s) => s.appName);
   const [acc, setAcc] = useState(null);
+  const [maxUsersDraft, setMaxUsersDraft] = useState('0');
   const [wlInput, setWlInput] = useState('');
   const [invLabel, setInvLabel] = useState('');
   const [invMaxUses, setInvMaxUses] = useState('5');
@@ -21,31 +24,50 @@ export function AdminAccess() {
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
 
-  const load = () => {
-    api.admin.getAccess().then(setAcc).catch((err) => ui.error(err.message));
-  };
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    api.admin.getAccess()
+      .then((res) => { setAcc(res); setMaxUsersDraft(String(res.maxUsers ?? 0)); })
+      .catch((err) => ui.error(err.message));
+  }, []);
 
   if (!acc) {
     return <div className="empty"><span className="spinner" /></div>;
   }
 
-  const saveAccess = async (nextAcc = acc) => {
+  const persistAccess = async (patch, successMsg) => {
     setSaving(true);
     try {
       const saved = await api.admin.saveAccess({
-        inviteOnly: nextAcc.inviteOnly,
-        maxUsers: Number(nextAcc.maxUsers) || 0,
-        whitelist: nextAcc.whitelist,
+        inviteOnly: patch.inviteOnly ?? acc.inviteOnly,
+        maxUsers: patch.maxUsers !== undefined ? Number(patch.maxUsers) || 0 : acc.maxUsers,
+        whitelist: patch.whitelist ?? acc.whitelist,
       });
       setAcc(saved);
+      setMaxUsersDraft(String(saved.maxUsers ?? 0));
       loadSiteConfig();
-      ui.success('Đã lưu quy tắc truy cập');
+      onChanged?.();
+      if (successMsg) ui.success(successMsg);
     } catch (err) {
       ui.error(err.message);
     } finally {
       setSaving(false);
     }
+  };
+
+  // Auto-save Invite-Only immediately so the owner never forgets to click Save!
+  const toggleInviteOnly = async () => {
+    const next = !acc.inviteOnly;
+    setAcc((c) => ({ ...c, inviteOnly: next }));
+    await persistAccess(
+      { inviteOnly: next },
+      next ? 'Đã bật Chế độ Riêng tư (chỉ người được mời)' : 'Đã chuyển sang Chế độ Công khai',
+    );
+  };
+
+  const saveMaxUsers = async (e) => {
+    e.preventDefault();
+    const num = Math.max(0, Math.min(100000, Number(maxUsersDraft) || 0));
+    await persistAccess({ maxUsers: num }, num ? `Đã đặt giới hạn tối đa ${num} người dùng` : 'Đã bỏ giới hạn số người dùng');
   };
 
   const addWhitelist = async (e) => {
@@ -54,19 +76,15 @@ export function AdminAccess() {
     if (!val) return;
     const norm = val.includes('@') ? val.toLowerCase() : val;
     if (acc.whitelist.includes(norm)) {
-      ui.info('Đã có trong danh sách đặc cách');
+      ui.info('Người này đã có sẵn trong danh sách đặc cách');
       return;
     }
-    const next = { ...acc, whitelist: [...acc.whitelist, norm] };
-    setAcc(next);
     setWlInput('');
-    await saveAccess(next);
+    await persistAccess({ whitelist: [...acc.whitelist, norm] }, `Đã thêm ${norm} vào Whitelist`);
   };
 
   const removeWhitelist = async (item) => {
-    const next = { ...acc, whitelist: acc.whitelist.filter((x) => x !== item) };
-    setAcc(next);
-    await saveAccess(next);
+    await persistAccess({ whitelist: acc.whitelist.filter((x) => x !== item) }, `Đã gỡ ${item} khỏi Whitelist`);
   };
 
   const createInvite = async (e) => {
@@ -80,6 +98,7 @@ export function AdminAccess() {
       });
       setAcc((cur) => ({ ...cur, invites: [res.invite, ...(cur.invites || [])] }));
       setInvLabel('');
+      onChanged?.();
       ui.success(`Đã tạo mã mời ${res.invite.code}`);
     } catch (err) {
       ui.error(err.message);
@@ -88,20 +107,27 @@ export function AdminAccess() {
     }
   };
 
-  const copyCode = async (code) => {
+  const copyText = async (txt, msg) => {
     try {
-      await navigator.clipboard.writeText(code);
-      ui.success(`Đã sao chép mã ${code}`);
+      await navigator.clipboard.writeText(txt);
+      ui.success(msg);
     } catch {
-      ui.info(`Mã mời: ${code}`);
+      ui.info(txt);
     }
   };
 
+  const copyFullInvite = (inv) => {
+    const url = typeof window !== 'undefined' ? window.location.origin : '';
+    const text = `Mời bạn vào ${appName} cùng mình nè!\nTruy cập: ${url}\nMã mời: ${inv.code}`;
+    copyText(text, `Đã chép lời mời kèm mã ${inv.code} — dán vào Zalo/Messenger ngay!`);
+  };
+
   const revokeInvite = async (code) => {
-    if (!await ui.confirm(`Thu hồi mã ${code}?`, 'Người dùng mới sẽ không thể dùng mã này để đăng nhập nữa.', 'Thu hồi')) return;
+    if (!await ui.confirm(`Thu hồi mã ${code}?`, 'Người mới sẽ không thể dùng mã này để đăng nhập nữa.', 'Thu hồi')) return;
     try {
       await api.admin.revokeInvite(code);
       setAcc((cur) => ({ ...cur, invites: (cur.invites || []).filter((i) => i.code !== code) }));
+      onChanged?.();
       ui.success(`Đã thu hồi mã ${code}`);
     } catch (err) {
       ui.error(err.message);
@@ -109,66 +135,80 @@ export function AdminAccess() {
   };
 
   const now = Date.now();
+  const maxChanged = String(acc.maxUsers ?? 0) !== maxUsersDraft.trim();
 
   return (
     <>
-      <section className="adm-section">
-        <div className="adm-card">
-          <div className="adm-section-head" style={{ marginTop: 0 }}>
-            <h3><Icon name="lock" /> Chế độ Riêng tư &amp; Giới hạn</h3>
-          </div>
+      <div className="adm-page-head">
+        <div>
+          <h1>Kiểm soát Truy cập &amp; Mã mời</h1>
+          <p>Quyết định ai được phép sử dụng trang web của bạn — mở công khai hoặc giữ riêng cho nhóm bạn thân.</p>
+        </div>
+      </div>
 
-          <div className="adm-toggle-row">
+      <section className="adm-section">
+        <div className={`adm-card ${acc.inviteOnly ? 'warn-border' : ''}`}>
+          <div className="adm-toggle-row" style={{ paddingTop: 0 }}>
             <div>
-              <b>Chế độ Chỉ người được mời (Invite-Only)</b>
-              <small>Biến web thành ứng dụng riêng cho bạn &amp; nhóm bạn thân — người mới cần có Mã mời hoặc nằm trong Whitelist</small>
+              <b>
+                Chế độ Riêng tư (Chỉ người được mời)
+                <span className={`adm-tag ${acc.inviteOnly ? 'admin' : 'online'}`}>
+                  {acc.inviteOnly ? 'Đang bật (Riêng tư)' : 'Đang tắt (Công khai)'}
+                </span>
+              </b>
+              <small>Khi bật, người mới đăng nhập lần đầu bắt buộc phải nhập Mã mời hoặc có email nằm trong Whitelist. Tự động lưu ngay khi gạt.</small>
             </div>
             <button
               type="button"
               className="switch pressable"
               role="switch"
+              disabled={saving}
               aria-checked={acc.inviteOnly ? 'true' : 'false'}
-              aria-label="Bật chế độ chỉ người được mời"
-              onClick={() => setAcc((c) => ({ ...c, inviteOnly: !c.inviteOnly }))}
+              aria-label="Bật chế độ riêng tư"
+              onClick={toggleInviteOnly}
             />
           </div>
 
-          <div className="adm-field" style={{ marginTop: 14 }}>
-            <label htmlFor="adm-max-users">Giới hạn tổng số người dùng (0 = không giới hạn)</label>
-            <div className="adm-inline-form">
+          <form className="adm-field" style={{ marginTop: 14 }} onSubmit={saveMaxUsers}>
+            <label htmlFor="adm-max-users">Giới hạn tổng số người dùng tối đa</label>
+            <small>Nhập 0 để không giới hạn. Hữu ích khi muốn tiết kiệm tài nguyên Render Free.</small>
+            <div className="adm-inline-form" style={{ marginTop: 4 }}>
               <input
                 id="adm-max-users"
                 className="adm-input"
+                style={{ maxWidth: 220 }}
                 type="number"
                 min="0"
                 max="100000"
-                value={acc.maxUsers}
-                onChange={(e) => setAcc((c) => ({ ...c, maxUsers: e.target.value }))}
+                value={maxUsersDraft}
+                onChange={(e) => setMaxUsersDraft(e.target.value)}
               />
-              <Button variant="primary" loading={saving} onClick={() => saveAccess(acc)}>Lưu cài đặt</Button>
+              <Button type="submit" variant={maxChanged ? 'primary' : 'secondary'} size="sm" loading={saving} disabled={!maxChanged}>
+                Lưu giới hạn
+              </Button>
             </div>
-          </div>
+          </form>
         </div>
       </section>
 
       <section className="adm-section">
         <div className="adm-card">
-          <div className="adm-section-head" style={{ marginTop: 0 }}>
+          <div className="adm-section-head">
             <h3><Icon name="people" /> Danh sách Đặc cách (Whitelist)</h3>
-            <span className="adm-tag info">{acc.whitelist.length} mục</span>
+            <span className="adm-tag info">{acc.whitelist.length} người</span>
           </div>
-          <p style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600, marginBottom: 10 }}>
-            Email hoặc UID trong danh sách này luôn được vào web ngay cả khi bật chế độ Riêng tư (không cần nhập mã mời).
+          <p style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 600, marginBottom: 12 }}>
+            Email hoặc UID trong danh sách này luôn được vào web mà không cần nhập mã mời (bạn cũng có thể thêm nhanh trong tab <b>Người dùng</b>).
           </p>
           <form className="adm-inline-form" onSubmit={addWhitelist}>
             <input
               className="adm-input"
               type="text"
-              placeholder="Nhập email (vd: ban@gmail.com) hoặc UID…"
+              placeholder="Nhập email bạn bè (vd: ban@gmail.com) hoặc UID…"
               value={wlInput}
               onChange={(e) => setWlInput(e.target.value)}
             />
-            <Button type="submit" variant="secondary" icon="plus" disabled={!wlInput.trim()}>Thêm</Button>
+            <Button type="submit" variant="primary" size="sm" icon="plus" disabled={!wlInput.trim() || saving}>Thêm vào Whitelist</Button>
           </form>
 
           {acc.whitelist.length ? (
@@ -181,80 +221,103 @@ export function AdminAccess() {
               ))}
             </div>
           ) : (
-            <div style={{ marginTop: 10, fontSize: 13, color: 'var(--faint)', fontWeight: 600 }}>Chưa có ai trong danh sách đặc cách.</div>
+            <div style={{ marginTop: 12, fontSize: 13, color: 'var(--faint)', fontWeight: 600 }}>Chưa có ai trong danh sách đặc cách.</div>
           )}
         </div>
       </section>
 
       <section className="adm-section">
         <div className="adm-card">
-          <div className="adm-section-head" style={{ marginTop: 0 }}>
-            <h3><Icon name="key" /> Mã mời (Invite Codes)</h3>
+          <div className="adm-section-head">
+            <h3><Icon name="key" /> Tạo &amp; Quản lý Mã mời</h3>
             <span className="adm-tag info">{(acc.invites || []).length} mã</span>
           </div>
 
-          <form className="adm-inline-form" onSubmit={createInvite}>
-            <input
-              className="adm-input"
-              type="text"
-              maxLength={60}
-              placeholder="Nhãn gợi nhớ (vd: Nhóm lớp, Bạn thân…)"
-              value={invLabel}
-              onChange={(e) => setInvLabel(e.target.value)}
-            />
-            <input
-              className="adm-input"
-              style={{ maxWidth: 120 }}
-              type="number"
-              min="0"
-              max="10000"
-              title="Số lượt tối đa (0 = vô hạn)"
-              placeholder="Lượt"
-              value={invMaxUses}
-              onChange={(e) => setInvMaxUses(e.target.value)}
-            />
-            <input
-              className="adm-input"
-              style={{ maxWidth: 120 }}
-              type="number"
-              min="0"
-              max="365"
-              title="Hạn dùng (ngày, 0 = vĩnh viễn)"
-              placeholder="Ngày"
-              value={invDays}
-              onChange={(e) => setInvDays(e.target.value)}
-            />
-            <Button type="submit" variant="primary" icon="plus" loading={creating}>Tạo mã</Button>
+          <form className="adm-invite-grid" onSubmit={createInvite}>
+            <div className="adm-field" style={{ marginBottom: 0 }}>
+              <label htmlFor="adm-inv-label">Nhãn gợi nhớ</label>
+              <input
+                id="adm-inv-label"
+                className="adm-input"
+                type="text"
+                maxLength={60}
+                placeholder="VD: Nhóm lớp, Bạn thân…"
+                value={invLabel}
+                onChange={(e) => setInvLabel(e.target.value)}
+              />
+            </div>
+
+            <div className="adm-field" style={{ marginBottom: 0 }}>
+              <label htmlFor="adm-inv-uses">Số lượt dùng (0 = vô hạn)</label>
+              <input
+                id="adm-inv-uses"
+                className="adm-input"
+                type="number"
+                min="0"
+                max="10000"
+                value={invMaxUses}
+                onChange={(e) => setInvMaxUses(e.target.value)}
+              />
+              <div className="adm-quick-picks">
+                {[['1', '1 lượt'], ['5', '5 lượt'], ['0', 'Vô hạn']].map(([v, lbl]) => (
+                  <button key={v} type="button" className={invMaxUses === v ? 'on' : ''} onClick={() => setInvMaxUses(v)}>{lbl}</button>
+                ))}
+              </div>
+            </div>
+
+            <div className="adm-field" style={{ marginBottom: 0 }}>
+              <label htmlFor="adm-inv-days">Hạn dùng (ngày, 0 = mãi mãi)</label>
+              <input
+                id="adm-inv-days"
+                className="adm-input"
+                type="number"
+                min="0"
+                max="365"
+                value={invDays}
+                onChange={(e) => setInvDays(e.target.value)}
+              />
+              <div className="adm-quick-picks">
+                {[['7', '7 ngày'], ['30', '30 ngày'], ['0', 'Vĩnh viễn']].map(([v, lbl]) => (
+                  <button key={v} type="button" className={invDays === v ? 'on' : ''} onClick={() => setInvDays(v)}>{lbl}</button>
+                ))}
+              </div>
+            </div>
+
+            <Button type="submit" variant="primary" icon="plus" loading={creating}>Tạo mã mời</Button>
           </form>
 
           {!(acc.invites || []).length ? (
-            <div style={{ marginTop: 12, fontSize: 13, color: 'var(--faint)', fontWeight: 600 }}>
-              Chưa có mã mời nào. Bấm &ldquo;Tạo mã&rdquo; để cấp mã cho bạn bè.
+            <div style={{ marginTop: 14, fontSize: 13, color: 'var(--faint)', fontWeight: 600 }}>
+              Chưa có mã mời nào. Điền thông tin ở trên rồi bấm <b>Tạo mã mời</b> để cấp cho bạn bè.
             </div>
           ) : (
-            acc.invites.map((inv) => {
-              const expired = inv.expiresAt > 0 && inv.expiresAt < now;
-              const exhausted = inv.maxUses > 0 && inv.uses >= inv.maxUses;
-              return (
-                <div key={inv.code} className="adm-invite-row">
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <span className="adm-invite-code">{inv.code}</span>
-                      {inv.label ? <span style={{ fontSize: 13, fontWeight: 800 }}>{inv.label}</span> : null}
-                      {expired ? <span className="adm-tag banned">Hết hạn</span> : null}
-                      {exhausted ? <span className="adm-tag banned">Hết lượt</span> : null}
+            <div style={{ marginTop: 14 }}>
+              {acc.invites.map((inv) => {
+                const expired = inv.expiresAt > 0 && inv.expiresAt < now;
+                const exhausted = inv.maxUses > 0 && inv.uses >= inv.maxUses;
+                return (
+                  <div key={inv.code} className="adm-invite-row">
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span className="adm-invite-code">{inv.code}</span>
+                        {inv.label ? <span style={{ fontSize: 13, fontWeight: 800 }}>{inv.label}</span> : null}
+                        {expired ? <span className="adm-tag banned">Hết hạn</span> : null}
+                        {exhausted ? <span className="adm-tag banned">Hết lượt</span> : null}
+                        {!expired && !exhausted ? <span className="adm-tag online">Đang hoạt động</span> : null}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600, marginTop: 4 }}>
+                        Đã dùng: <b>{inv.uses}</b> / {inv.maxUses || '∞'} lượt · Hạn sử dụng: <b>{fmtDate(inv.expiresAt)}</b>
+                      </div>
                     </div>
-                    <div style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600, marginTop: 3 }}>
-                      Đã dùng: <b>{inv.uses}</b> / {inv.maxUses || '∞'} · Hạn: {fmtDate(inv.expiresAt)}
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      <Button variant="tinted" size="sm" icon="share" onClick={() => copyFullInvite(inv)}>Chép lời mời</Button>
+                      <Button variant="secondary" size="sm" icon="copy" onClick={() => copyText(inv.code, `Đã sao chép mã ${inv.code}`)}>Chép mã</Button>
+                      <Button variant="destructive-tinted" size="sm" icon="trash" onClick={() => revokeInvite(inv.code)}>Thu hồi</Button>
                     </div>
                   </div>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <Button variant="secondary" size="sm" icon="copy" onClick={() => copyCode(inv.code)}>Chép</Button>
-                    <Button variant="destructive-tinted" size="sm" icon="trash" onClick={() => revokeInvite(inv.code)}>Xóa</Button>
-                  </div>
-                </div>
-              );
-            })
+                );
+              })}
+            </div>
           )}
         </div>
       </section>

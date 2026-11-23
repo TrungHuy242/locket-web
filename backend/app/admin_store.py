@@ -109,20 +109,27 @@ def _read_json(path: Path, default):
         return copy.deepcopy(default)
 
 
-def _dir_bytes(root: Path) -> int:
+def _dir_stats(root: Path) -> tuple[int, int]:
+    """Return `(total_bytes, file_count)` excluding temporary `.tmp` files."""
     if not root.exists():
-        return 0
+        return 0, 0
     total = 0
+    count = 0
     try:
         for p in root.rglob("*"):
             if p.is_file() and ".tmp" not in p.name:
                 try:
                     total += p.stat().st_size
+                    count += 1
                 except OSError:
                     pass
     except OSError:
         pass
-    return total
+    return total, count
+
+
+def _dir_bytes(root: Path) -> int:
+    return _dir_stats(root)[0]
 
 
 def _safe_link(url: str) -> str:
@@ -459,6 +466,7 @@ class AdminStore:
                 "messages": 0,
                 "tools": 0,
                 "invited": False,
+                "note": "",
                 "lastIp": "",
             }
             self._users[uid] = rec
@@ -742,6 +750,41 @@ class AdminStore:
             self.append_audit(actor, "user.unban", target=u)
         return removed
 
+    def set_user_note(self, uid: str, note: str, actor: str) -> str:
+        u = (uid or "").strip()
+        if not u:
+            raise ValueError("Thiếu UID người dùng.")
+        cleaned = (note or "").strip()[:300]
+        with self._lock:
+            rec = self._ensure_user_locked(u)
+            rec["note"] = cleaned
+            users_snap = copy.deepcopy(self._users)
+            metrics_snap = copy.deepcopy(self._metrics)
+            self._dirty_stats = False
+        _atomic_write_json(self._users_path(), users_snap)
+        _atomic_write_json(self._metrics_path(), metrics_snap)
+        state_sync.mark_dirty()
+        self.append_audit(actor, "user.note", target=u, detail=cleaned[:120] or "(đã xóa ghi chú)")
+        return cleaned
+
+    def set_user_whitelist(self, uid: str, enabled: bool, actor: str, email: str = "") -> dict:
+        u = (uid or "").strip()
+        with self._lock:
+            rec = self._users.get(u) or {}
+            em = (email or rec.get("email") or "").strip().lower()
+            wl = list(self._access.get("whitelist") or [])
+            if enabled:
+                key = em or u
+                if key and key not in wl and u not in wl:
+                    wl.append(key)
+            else:
+                wl = [item for item in wl if item != u and (not em or item.lower() != em)]
+            self._access["whitelist"] = wl[:1000]
+            self._save_access_locked()
+            whitelisted = (u in self._access["whitelist"]) or (bool(em) and em in self._access["whitelist"])
+        self.append_audit(actor, "access.whitelist", target=em or u, detail="added" if enabled else "removed")
+        return {"whitelisted": whitelisted, "whitelistCount": len(self._access["whitelist"])}
+
     def update_access(self, patch: dict, actor: str) -> dict:
         with self._lock:
             cur = copy.deepcopy(self._access)
@@ -842,6 +885,8 @@ class AdminStore:
                 })
 
             today_b = daily.get(today) if isinstance(daily.get(today), dict) else _empty_day()
+            yest_key = days30[-2] if len(days30) >= 2 else today
+            yest_b = daily.get(yest_key) if isinstance(daily.get(yest_key), dict) else _empty_day()
             dau_uids = set(today_b.get("activeUids") or []) | online_uids
             wau_set |= online_uids
             mau_set |= online_uids
@@ -859,6 +904,34 @@ class AdminStore:
                 if s.get("uid"):
                     known_uids.add(s["uid"])
 
+            # Top 5 active members leaderboard
+            top_candidates = []
+            for uid, rec in self._users.items():
+                m_cnt = int(rec.get("moments") or 0)
+                msg_cnt = int(rec.get("messages") or 0)
+                tool_cnt = int(rec.get("tools") or 0)
+                log_cnt = int(rec.get("logins") or 0)
+                score = m_cnt * 3 + msg_cnt * 2 + tool_cnt + log_cnt
+                em = rec.get("email") or ""
+                top_candidates.append({
+                    "uid": uid,
+                    "name": rec.get("name") or rec.get("username") or (em.split("@")[0] if em else uid[:12]),
+                    "username": rec.get("username") or "",
+                    "avatar": rec.get("avatar"),
+                    "moments": m_cnt,
+                    "photos": int(rec.get("photos") or 0),
+                    "videos": int(rec.get("videos") or 0),
+                    "photobooth": int(rec.get("photobooth") or 0),
+                    "messages": msg_cnt,
+                    "tools": tool_cnt,
+                    "logins": log_cnt,
+                    "online": uid in online_uids,
+                    "isAdmin": config.is_admin_identity(uid, em),
+                    "_score": score,
+                })
+            top_candidates.sort(key=lambda r: (r["_score"], r["moments"], r["logins"]), reverse=True)
+            top_users = [{k: v for k, v in item.items() if k != "_score"} for item in top_candidates[:5]]
+
             lats = sorted(self._latencies)
             avg_lat = round(sum(lats) / len(lats), 1) if lats else 0.0
             p95_lat = round(lats[min(len(lats) - 1, int(len(lats) * 0.95))], 1) if lats else 0.0
@@ -867,11 +940,21 @@ class AdminStore:
 
             totals = copy.deepcopy(self._metrics.get("totals") or {})
             banned_count = len(self._access.get("banned") or {})
+            whitelist_count = len(self._access.get("whitelist") or [])
+            invite_count = len(self._access.get("invites") or [])
             recent_err_count = len(self._recent_errors)
             uptime_sec = int(max(0, now - self._started_at))
+            site_state = {
+                "maintenanceEnabled": bool(self._site_config["maintenance"]["enabled"]),
+                "inviteOnly": bool(self._access.get("inviteOnly", False)),
+                "announcementEnabled": bool(self._site_config["announcement"]["enabled"] and self._site_config["announcement"]["text"]),
+                "disabledFeaturesCount": sum(1 for v in self._site_config["features"].values() if not v),
+                "whitelistCount": whitelist_count,
+                "inviteCount": invite_count,
+            }
 
-        thumbs_b = int(hf_status.get("thumbCacheBytes") or 0)
-        videos_b = int(hf_status.get("videoCacheBytes") or 0)
+        thumbs_b, thumbs_files = _dir_stats(config.THUMBS_DIR)
+        videos_b, videos_files = _dir_stats(config.VIDEO_CACHE_DIR)
         accounts_b = _dir_bytes(config.ACCOUNTS_DIR)
         sessions_b = _dir_bytes(config.SESSIONS_DIR)
         admin_b = _dir_bytes(config.ADMIN_DIR)
@@ -908,6 +991,24 @@ class AdminStore:
                 "messages": int(today_b.get("messages") or 0),
                 "tools": int(today_b.get("weather") or 0) + int(today_b.get("music") or 0) + int(today_b.get("places") or 0) + int(today_b.get("exports") or 0),
             },
+            "yesterday": {
+                "date": yest_key,
+                "dau": len(yest_b.get("activeUids") or []),
+                "logins": int(yest_b.get("logins") or 0),
+                "moments": int(yest_b.get("moments") or 0),
+                "messages": int(yest_b.get("messages") or 0),
+                "tools": int(yest_b.get("weather") or 0) + int(yest_b.get("music") or 0) + int(yest_b.get("places") or 0) + int(yest_b.get("exports") or 0),
+            },
+            "topUsers": top_users,
+            "siteState": site_state,
+            "security": {
+                "stealth404": True,
+                "adminEmailCount": len(config.ADMIN_EMAILS),
+                "adminUidCount": len(config.ADMIN_UIDS),
+                "secretPortalEnabled": config.has_secret_admin_portal(),
+                "hfEnabled": bool(hf_status.get("enabled")),
+                "hfEncrypted": bool(hf_status.get("encrypted")),
+            },
             "series30": series30,
             "health": {
                 "uptimeSec": uptime_sec,
@@ -920,7 +1021,9 @@ class AdminStore:
                 "errorRatePct": err_rate,
                 "disk": {
                     "thumbsBytes": thumbs_b,
+                    "thumbsFiles": thumbs_files,
                     "videoBytes": videos_b,
+                    "videoFiles": videos_files,
                     "accountsBytes": accounts_b,
                     "sessionsBytes": sessions_b,
                     "adminBytes": admin_b,
@@ -930,7 +1033,7 @@ class AdminStore:
             },
         }
 
-    def list_users(self, sessions_summary: list[dict], q: str = "", filt: str = "all") -> dict:
+    def list_users(self, sessions_summary: list[dict], q: str = "", filt: str = "all", sort: str = "recent") -> dict:
         now = time.time()
         today = _today_key(now)
         cutoff = now - ONLINE_WINDOW_SEC
@@ -942,6 +1045,7 @@ class AdminStore:
                 sess_by_uid.setdefault(u, []).append(s)
 
         with self._lock:
+            wl_set = set(self._access.get("whitelist") or [])
             merged: dict[str, dict] = {}
             for uid, rec in self._users.items():
                 merged[uid] = copy.deepcopy(rec)
@@ -969,6 +1073,7 @@ class AdminStore:
                         "messages": 0,
                         "tools": 0,
                         "invited": False,
+                        "note": "",
                         "lastIp": "",
                     }
 
@@ -992,6 +1097,7 @@ class AdminStore:
                         "messages": 0,
                         "tools": 0,
                         "invited": False,
+                        "note": "",
                         "lastIp": "",
                     }
 
@@ -1003,6 +1109,7 @@ class AdminStore:
                 slist = sess_by_uid.get(uid) or []
                 email = rec.get("email") or ""
                 is_adm = config.is_admin_identity(uid, email)
+                is_wl = (uid in wl_set) or (bool(email) and email.lower() in wl_set)
                 first_seen = int(rec.get("firstSeen") or 0)
                 is_new_today = bool(first_seen and _today_key(first_seen / 1000.0) == today)
                 rows.append({
@@ -1021,11 +1128,17 @@ class AdminStore:
                     "messages": int(rec.get("messages") or 0),
                     "tools": int(rec.get("tools") or 0),
                     "activeSessions": len(slist),
+                    "sessions": [
+                        {"sidHash": s["sidHash"], "inMemory": bool(s.get("inMemory")), "lastSeenMs": int(s.get("lastSeenMs") or 0)}
+                        for s in slist
+                    ],
                     "online": online,
                     "newToday": is_new_today,
                     "banned": ban is not None,
                     "banReason": (ban or {}).get("reason") or "",
                     "invited": bool(rec.get("invited")),
+                    "whitelisted": is_wl,
+                    "note": str(rec.get("note") or ""),
                     "isAdmin": is_adm,
                 })
 
@@ -1034,6 +1147,7 @@ class AdminStore:
             "all": total,
             "online": sum(1 for r in rows if r["online"]),
             "today": sum(1 for r in rows if r["newToday"]),
+            "whitelist": sum(1 for r in rows if r["whitelisted"]),
             "banned": sum(1 for r in rows if r["banned"]),
         }
 
@@ -1041,6 +1155,8 @@ class AdminStore:
             rows = [r for r in rows if r["online"]]
         elif filt == "today":
             rows = [r for r in rows if r["newToday"]]
+        elif filt == "whitelist":
+            rows = [r for r in rows if r["whitelisted"]]
         elif filt == "banned":
             rows = [r for r in rows if r["banned"]]
 
@@ -1052,9 +1168,17 @@ class AdminStore:
                 or query in (r["username"] or "").lower()
                 or query in (r["email"] or "").lower()
                 or query in (r["uid"] or "").lower()
+                or query in (r["note"] or "").lower()
             ]
 
-        rows.sort(key=lambda r: (r["online"], r["activeSessions"] > 0, r["lastSeen"]), reverse=True)
+        if sort == "moments":
+            rows.sort(key=lambda r: (r["moments"], r["messages"], r["lastSeen"]), reverse=True)
+        elif sort == "sessions":
+            rows.sort(key=lambda r: (r["activeSessions"], r["online"], r["lastSeen"]), reverse=True)
+        elif sort == "newest":
+            rows.sort(key=lambda r: (r["firstSeen"], r["lastSeen"]), reverse=True)
+        else:
+            rows.sort(key=lambda r: (r["online"], r["activeSessions"] > 0, r["lastSeen"]), reverse=True)
         return {
             "users": rows,
             "total": total,
@@ -1062,6 +1186,10 @@ class AdminStore:
             "counts": counts,
             "activeSessions": len(sessions_summary),
         }
+
+    def get_user_detail(self, uid: str, sessions_summary: list[dict]) -> Optional[dict]:
+        data = self.list_users(sessions_summary)
+        return next((u for u in data["users"] if u["uid"] == uid), None)
 
     def recent_logs(self) -> dict:
         with self._lock:
