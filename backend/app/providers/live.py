@@ -484,6 +484,7 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
         user = self._user_from_profile(profile, self.uid)
         user["email"] = profile.get("email") or self.client.session.email
         user["birthdate"] = profile.get("birthdate")
+        user["phone"] = profile.get("phone") or profile.get("phone_number") or ""
         now = time.time()
         with self._state_lock:
             self._me = user
@@ -495,6 +496,62 @@ class LiveProvider(MomentsMixin, NotificationsMixin, FriendsMixin, ChatMixin, Pr
     def update_name(self, first_name: str, last_name: str) -> dict:
         self._api("changeProfileInfo", {"first_name": first_name, "last_name": last_name})
         return self.me(refresh=True)
+
+    def update_birthdate(self, birthdate: str) -> dict:
+        self._api("changeProfileInfo", {"birthdate": birthdate})
+        updated = dict(self.me(refresh=True))
+        updated["birthdate"] = birthdate
+        with self._state_lock:
+            if self._me is not None:
+                self._me["birthdate"] = birthdate
+        return updated
+
+    def change_password(self, new_password: str) -> dict:
+        token = self._token()
+        url = f"{self.client.session.FIREBASE_AUTH_URL}:update?key={self.client.session.FIREBASE_API_KEY}"
+        headers = {
+            "User-Agent": self.client.device.user_agent,
+            "X-Ios-Bundle-Identifier": self.client.device.bundle_id,
+            "Content-Type": "application/json",
+        }
+        try:
+            res = self._http.post(url, json={"idToken": token, "password": new_password, "returnSecureToken": True}, headers=headers, timeout=12)
+        except requests.RequestException as exc:
+            raise ProviderError("Không kết nối được máy chủ xác thực Locket.", 502) from exc
+        if res.status_code != 200:
+            raw = res.text or ""
+            if "CREDENTIAL_TOO_OLD_LOGIN_AGAIN" in raw:
+                raise ProviderError("Phiên đăng nhập đã lâu. Hãy đăng xuất rồi đăng nhập lại, hoặc chọn gửi Email đặt lại mật khẩu.", 400)
+            if "WEAK_PASSWORD" in raw:
+                raise ProviderError("Mật khẩu mới quá yếu (cần tối thiểu 6 ký tự).", 400)
+            raise ProviderError("Không đổi được mật khẩu trực tiếp. Hãy thử gửi Email đặt lại mật khẩu.", 400)
+        data = res.json()
+        with self._lock:
+            self.client.session.id_token = data.get("idToken", token)
+            self.client.session.refresh_token = data.get("refreshToken", self.client.session.refresh_token)
+            self.client.session.save()
+        return {"ok": True}
+
+    def send_password_reset(self, email: Optional[str] = None) -> dict:
+        target = (email or self.client.session.email or "").strip()
+        if not target:
+            me_data = self.me()
+            target = (me_data.get("email") or "").strip()
+        if not target:
+            raise ProviderError("Tài khoản này chưa gắn địa chỉ email.", 400)
+        url = f"{self.client.session.FIREBASE_AUTH_URL}:sendOobCode?key={self.client.session.FIREBASE_API_KEY}"
+        headers = {
+            "User-Agent": self.client.device.user_agent,
+            "X-Ios-Bundle-Identifier": self.client.device.bundle_id,
+            "Content-Type": "application/json",
+        }
+        try:
+            res = self._http.post(url, json={"requestType": "PASSWORD_RESET", "email": target}, headers=headers, timeout=12)
+        except requests.RequestException as exc:
+            raise ProviderError("Không gửi được email đặt lại mật khẩu.", 502) from exc
+        if res.status_code != 200:
+            raise ProviderError("Locket từ chối gửi email đặt lại mật khẩu lúc này.", 400)
+        return {"ok": True, "email": target}
 
     def update_avatar(self, image: bytes) -> dict:
         self._token()

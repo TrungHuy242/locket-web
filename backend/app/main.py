@@ -320,7 +320,9 @@ def get_session(request: Request, response: Response):
             return {"authenticated": False, "banned": True, "reason": ban.get("reason") or ""}
     if uid:
         admin_store.touch_user(uid, user_info=user, email=email)
-    out = {"authenticated": True, "user": user}
+    enriched = dict(user or {})
+    enriched["gold"] = admin_store.gold_info(uid, email, is_admin=is_adm)
+    out = {"authenticated": True, "user": enriched}
     if is_adm:
         out["isAdmin"] = True
     return out
@@ -360,7 +362,9 @@ def login(body: LoginBody, request: Request, response: Response):
     _set_cookie(response, request, sid)
     client_ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (request.client.host if request.client else "")
     admin_store.record_login(user, email=email_clean, ip=client_ip, invited=used_invite)
-    out = {"authenticated": True, "user": user}
+    enriched = dict(user or {})
+    enriched["gold"] = admin_store.gold_info(uid, email_clean, is_admin=is_adm)
+    out = {"authenticated": True, "user": enriched}
     if is_adm:
         out["isAdmin"] = True
     return out
@@ -381,28 +385,110 @@ class NameBody(BaseModel):
     lastName: str = Field(default="", max_length=40)
 
 
+class BirthdateBody(BaseModel):
+    birthdate: str = Field(min_length=10, max_length=10)
+
+
+class PasswordBody(BaseModel):
+    newPassword: str = Field(min_length=6, max_length=128)
+
+
 class ToggleBody(BaseModel):
     enabled: bool
 
 
+class FeedbackBody(BaseModel):
+    category: str = Field(default="suggestion", max_length=32)
+    title: str = Field(default="", max_length=120)
+    message: str = Field(min_length=2, max_length=1500)
+    meta: Optional[dict] = None
+
+
+_fb_attempts: dict = defaultdict(deque)
+_fb_lock = threading.Lock()
+
+
+def _enrich_me(user: dict, request: Request, provider: Provider) -> dict:
+    uid, email = provider_identity(provider)
+    uid = uid or str((user or {}).get("uid") or "")
+    email = email or str((user or {}).get("email") or "")
+    is_adm = _is_caller_admin(request, provider)
+    out = dict(user or {})
+    out["gold"] = admin_store.gold_info(uid, email, is_admin=is_adm)
+    return out
+
+
 @app.get("/api/me")
-def me(p: Provider = Depends(current)):
-    return p.me(refresh=True)
+def me(request: Request, p: Provider = Depends(current)):
+    return _enrich_me(p.me(refresh=True), request, p)
 
 
 @app.patch("/api/me")
-def update_me(body: NameBody, p: Provider = Depends(current)):
-    return p.update_name(body.firstName.strip(), body.lastName.strip())
+def update_me(body: NameBody, request: Request, p: Provider = Depends(current)):
+    return _enrich_me(p.update_name(body.firstName.strip(), body.lastName.strip()), request, p)
+
+
+@app.patch("/api/me/birthdate")
+def update_birthdate(body: BirthdateBody, request: Request, p: Provider = Depends(current)):
+    raw = body.birthdate.strip()
+    try:
+        dt = datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Ngày sinh không hợp lệ (định dạng YYYY-MM-DD).") from exc
+    today = datetime.now(timezone.utc).date()
+    if dt.year < 1905 or dt > today:
+        raise HTTPException(status_code=422, detail="Năm sinh không hợp lệ.")
+    return _enrich_me(p.update_birthdate(raw), request, p)
+
+
+@app.post("/api/me/password")
+def change_password(body: PasswordBody, p: Provider = Depends(current)):
+    return p.change_password(body.newPassword)
+
+
+@app.post("/api/me/password-reset")
+def password_reset(p: Provider = Depends(current)):
+    return p.send_password_reset()
 
 
 @app.post("/api/me/avatar")
-def update_avatar(image: UploadFile = File(...), p: Provider = Depends(current)):
-    return p.update_avatar(_clean_image(_read_upload(image, config.MAX_IMAGE_BYTES), 720))
+def update_avatar(request: Request, image: UploadFile = File(...), p: Provider = Depends(current)):
+    return _enrich_me(p.update_avatar(_clean_image(_read_upload(image, config.MAX_IMAGE_BYTES), 720)), request, p)
 
 
 @app.post("/api/me/notifications")
 def notifications(body: ToggleBody, p: Provider = Depends(current)):
     return p.set_notifications(body.enabled)
+
+
+@app.post("/api/feedback")
+def submit_feedback(body: FeedbackBody, request: Request, p: Provider = Depends(current)):
+    uid, email = provider_identity(p)
+    key = uid or (request.client.host if request.client else "?")
+    now = time.time()
+    with _fb_lock:
+        bucket = _fb_attempts[key]
+        while bucket and now - bucket[0] > 600:
+            bucket.popleft()
+        if len(bucket) >= 10:
+            raise HTTPException(status_code=429, detail="Bạn vừa gửi nhiều phản hồi liên tiếp. Vui lòng thử lại sau ít phút.")
+        bucket.append(now)
+    user_info = dict(p.me() or {})
+    if uid and not user_info.get("uid"):
+        user_info["uid"] = uid
+    if email and not user_info.get("email"):
+        user_info["email"] = email
+    try:
+        item = admin_store.submit_feedback(
+            user=user_info,
+            category=body.category,
+            title=body.title,
+            message=body.message,
+            meta=body.meta,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "id": item["id"]}
 
 
 # --------------------------------------------------------------------------- moments

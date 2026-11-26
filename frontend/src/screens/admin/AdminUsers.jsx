@@ -12,6 +12,7 @@ const FILTERS = [
   ['all', 'Tất cả'],
   ['online', 'Đang online'],
   ['today', 'Mới hôm nay'],
+  ['gold', '👑 VIP Gold'],
   ['whitelist', 'Whitelist'],
   ['banned', 'Đã chặn'],
 ];
@@ -90,7 +91,23 @@ export function AdminUsers({ navIntent, onChanged }) {
     }
   };
 
-  const counts = data?.counts || { all: 0, online: 0, today: 0, whitelist: 0, banned: 0 };
+  const quickToggleGold = async (e, u) => {
+    e.stopPropagation();
+    setBusyUid(u.uid);
+    try {
+      const next = !u.isGold;
+      await api.admin.toggleUserGold(u.uid, next);
+      ui.success(next ? `👑 Đã cấp Locket Gold VIP cho ${u.name}` : `Đã thu hồi Locket Gold của ${u.name}`);
+      await load();
+      onChanged?.();
+    } catch (err) {
+      ui.error(err.message);
+    } finally {
+      setBusyUid('');
+    }
+  };
+
+  const counts = data?.counts || { all: 0, online: 0, today: 0, gold: 0, whitelist: 0, banned: 0 };
   const users = data?.users || [];
   const drawerUser = drawerUid ? users.find((u) => u.uid === drawerUid) || null : null;
 
@@ -172,12 +189,13 @@ export function AdminUsers({ navIntent, onChanged }) {
                   onClick={() => setDrawerUid(u.uid)}
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDrawerUid(u.uid); } }}
                 >
-                  <Avatar user={u} />
+                  <Avatar user={u} goldBadge={u.isGold} />
                   <div className="adm-user-main">
                     <div className="adm-user-name">
                       <span>{u.name}</span>
                       {u.online ? <span className="adm-tag online">● Online</span> : null}
                       {u.isAdmin ? <span className="adm-tag admin">Chủ sở hữu</span> : null}
+                      {u.isGold ? <span className="adm-tag gold">👑 Gold VIP</span> : null}
                       {u.whitelisted ? <span className="adm-tag wl">Whitelist</span> : null}
                       {u.banned ? <span className="adm-tag banned">Đã chặn</span> : null}
                     </div>
@@ -201,6 +219,16 @@ export function AdminUsers({ navIntent, onChanged }) {
                   </div>
 
                   <div className="adm-user-actions">
+                    {!u.isAdmin ? (
+                      <Button
+                        variant={u.isGold ? 'primary' : 'secondary'}
+                        size="sm"
+                        loading={busy}
+                        onClick={(e) => quickToggleGold(e, u)}
+                      >
+                        {u.isGold ? '👑 VIP Gold' : '+ Cấp Gold'}
+                      </Button>
+                    ) : null}
                     {!u.isAdmin ? (
                       <Button
                         variant={u.whitelisted ? 'tinted' : 'secondary'}

@@ -12,6 +12,7 @@ import { AdminUsers } from './admin/AdminUsers.jsx';
 import { AdminBranding } from './admin/AdminBranding.jsx';
 import { AdminFeatures } from './admin/AdminFeatures.jsx';
 import { AdminAccess } from './admin/AdminAccess.jsx';
+import { AdminFeedback } from './admin/AdminFeedback.jsx';
 import { AdminOps } from './admin/AdminOps.jsx';
 import '../styles/admin.css';
 
@@ -20,7 +21,8 @@ const NAV_GROUPS = [
     heading: 'Giám sát',
     items: [
       { id: 'overview', label: 'Tổng quan', sub: 'Chỉ số & xu hướng', icon: 'chart' },
-      { id: 'users', label: 'Người dùng', sub: 'Danh sách, phiên & chặn', icon: 'people' },
+      { id: 'users', label: 'Người dùng & Gold', sub: 'Cấp VIP Gold, phiên & chặn', icon: 'people' },
+      { id: 'feedback', label: 'Hộp thư & Yêu cầu', sub: 'Xin Gold, báo lỗi & góp ý', icon: 'inbox' },
     ],
   },
   {
@@ -234,6 +236,7 @@ export function Admin({ view, standalone = false, onClose }) {
 
   const badgeOf = (id) => {
     if (id === 'users' && kpi.onlineNow > 0) return { text: String(kpi.onlineNow), tone: 'ok' };
+    if (id === 'feedback' && kpi.openFeedback > 0) return { text: String(kpi.openFeedback), tone: 'danger' };
     if (id === 'features' && siteState.maintenanceEnabled) return { text: 'Bảo trì', tone: 'danger' };
     if (id === 'access' && siteState.inviteOnly) return { text: 'Riêng tư', tone: '' };
     if (id === 'ops' && errCount > 0) return { text: String(errCount), tone: 'danger' };
@@ -393,6 +396,12 @@ export function Admin({ view, standalone = false, onClose }) {
             <AdminUsers
               navIntent={userNavIntent}
               onChanged={() => loadOverview({ silent: true })}
+            />
+          ) : null}
+          {tab === 'feedback' ? (
+            <AdminFeedback
+              onChanged={() => loadOverview({ silent: true })}
+              onOpenUser={(uid) => switchTab('users', { focusUid: uid })}
             />
           ) : null}
           {tab === 'branding' ? (

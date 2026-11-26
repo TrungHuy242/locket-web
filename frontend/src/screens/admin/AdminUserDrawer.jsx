@@ -58,6 +58,20 @@ export function AdminUserDrawer({ user, onClose, onUpdated }) {
     }
   };
 
+  const toggleGold = async () => {
+    setBusy('gold');
+    try {
+      const next = !user.isGold;
+      await api.admin.toggleUserGold(user.uid, next);
+      ui.success(next ? `👑 Đã cấp Locket Gold VIP cho ${user.name}` : `Đã thu hồi Locket Gold của ${user.name}`);
+      onUpdated?.();
+    } catch (err) {
+      ui.error(err.message);
+    } finally {
+      setBusy('');
+    }
+  };
+
   const toggleWhitelist = async () => {
     setBusy('wl');
     try {
@@ -126,7 +140,7 @@ export function AdminUserDrawer({ user, onClose, onUpdated }) {
 
         <div className="adm-drawer-body">
           <div className="adm-drawer-profile">
-            <Avatar user={user} />
+            <Avatar user={user} goldBadge={user.isGold} />
             <div style={{ minWidth: 0, flex: 1 }}>
               <h4>{user.name}</h4>
               <div className="adm-user-meta" style={{ marginTop: 3 }}>
@@ -135,6 +149,7 @@ export function AdminUserDrawer({ user, onClose, onUpdated }) {
               <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 6 }}>
                 {user.online ? <span className="adm-tag online">● Đang online</span> : null}
                 {user.isAdmin ? <span className="adm-tag admin">Chủ sở hữu</span> : null}
+                {user.isGold ? <span className="adm-tag gold">👑 Gold VIP{user.goldSince ? ` (${user.goldSince})` : ''}</span> : null}
                 {user.whitelisted ? <span className="adm-tag wl">Whitelist</span> : null}
                 {user.invited ? <span className="adm-tag info">Đã dùng mã mời</span> : null}
                 {user.banned ? <span className="adm-tag banned">Đang bị chặn</span> : null}
@@ -215,6 +230,16 @@ export function AdminUserDrawer({ user, onClose, onUpdated }) {
               </div>
 
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Button
+                  variant={user.isGold ? 'primary' : 'secondary'}
+                  size="sm"
+                  icon="crown"
+                  loading={busy === 'gold'}
+                  onClick={toggleGold}
+                >
+                  {user.isGold ? '👑 Đang có Gold VIP (Thu hồi)' : '👑 Cấp Locket Gold VIP'}
+                </Button>
+
                 <Button
                   variant={user.whitelisted ? 'tinted' : 'secondary'}
                   size="sm"

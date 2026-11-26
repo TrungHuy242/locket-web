@@ -30,12 +30,15 @@ VN_TZ = timezone(timedelta(hours=7))
 ONLINE_WINDOW_SEC = 15 * 60
 MAX_DAILY_RETENTION = 90
 MAX_AUDIT_ENTRIES = 500
+MAX_FEEDBACK_ENTRIES = 300
 MAX_ERROR_ENTRIES = 100
 MAX_LATENCY_SAMPLES = 250
 STATS_FLUSH_DEBOUNCE_SEC = 25.0
 
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 VALID_ANNOUNCE_TYPES = ("info", "update", "warning", "maintenance")
+VALID_FEEDBACK_CATEGORIES = ("bug", "suggestion", "feature", "gold_request")
+VALID_FEEDBACK_STATUS = ("open", "resolved")
 INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 DEFAULT_SITE_CONFIG: dict = {
@@ -58,6 +61,7 @@ DEFAULT_SITE_CONFIG: dict = {
         "photobooth": True,
         "boothVideo": True,
         "smartCaptions": True,
+        "cameraLooks": True,
         "zipExport": True,
         "chat": True,
     },
@@ -67,6 +71,7 @@ DEFAULT_ACCESS: dict = {
     "inviteOnly": False,
     "maxUsers": 0,
     "whitelist": [],
+    "gold": {},
     "banned": {},
     "invites": [],
 }
@@ -205,6 +210,21 @@ def _merge_access(raw: object) -> dict:
                 seen.add(key)
                 cleaned.append(key)
         base["whitelist"] = cleaned[:1000]
+    gold = raw.get("gold")
+    if isinstance(gold, dict):
+        out_g = {}
+        for uid, info in gold.items():
+            u = str(uid or "").strip()
+            if not u or not isinstance(info, dict):
+                continue
+            out_g[u] = {
+                "at": int(info.get("at") or 0),
+                "since": str(info.get("since") or "").strip()[:12],
+                "by": str(info.get("by") or "admin")[:80],
+                "note": str(info.get("note") or "").strip()[:160],
+                "email": str(info.get("email") or "").strip().lower()[:254],
+            }
+        base["gold"] = out_g
     banned = raw.get("banned")
     if isinstance(banned, dict):
         out_b = {}
@@ -274,6 +294,7 @@ class AdminStore:
         self._metrics: dict = _empty_metrics()
         self._site_config: dict = copy.deepcopy(DEFAULT_SITE_CONFIG)
         self._access: dict = copy.deepcopy(DEFAULT_ACCESS)
+        self._feedback: list[dict] = []
         self._audit: deque[dict] = deque(maxlen=MAX_AUDIT_ENTRIES)
         self._active_seen: dict[str, float] = {}
         self._latencies: deque[float] = deque(maxlen=MAX_LATENCY_SAMPLES)
@@ -298,6 +319,9 @@ class AdminStore:
     def _access_path(self) -> Path:
         return config.ADMIN_DIR / "access.json"
 
+    def _feedback_path(self) -> Path:
+        return config.ADMIN_DIR / "feedback.json"
+
     def _audit_path(self) -> Path:
         return config.ADMIN_DIR / "audit.jsonl"
 
@@ -318,6 +342,9 @@ class AdminStore:
 
             self._site_config = _merge_site_config(_read_json(self._site_config_path(), DEFAULT_SITE_CONFIG))
             self._access = _merge_access(_read_json(self._access_path(), DEFAULT_ACCESS))
+
+            raw_fb = _read_json(self._feedback_path(), [])
+            self._feedback = [item for item in raw_fb if isinstance(item, dict) and item.get("id")][:MAX_FEEDBACK_ENTRIES] if isinstance(raw_fb, list) else []
 
             self._audit.clear()
             audit_p = self._audit_path()
@@ -785,6 +812,210 @@ class AdminStore:
         self.append_audit(actor, "access.whitelist", target=em or u, detail="added" if enabled else "removed")
         return {"whitelisted": whitelisted, "whitelistCount": len(self._access["whitelist"])}
 
+    # ------------------------------------------------------------------ Locket Gold VIP & Feedback Inbox
+    def _save_feedback_locked(self) -> None:
+        _atomic_write_json(self._feedback_path(), self._feedback[:MAX_FEEDBACK_ENTRIES])
+        state_sync.mark_dirty(urgent=True)
+
+    def _gold_entry_locked(self, uid: Optional[str] = None, email: Optional[str] = None) -> Optional[dict]:
+        u = (uid or "").strip()
+        e = (email or "").strip().lower()
+        gold_map = self._access.get("gold") or {}
+        if u and u in gold_map:
+            return gold_map[u]
+        if e:
+            for info in gold_map.values():
+                if info.get("email") and info["email"].lower() == e:
+                    return info
+        return None
+
+    def gold_info(self, uid: Optional[str] = None, email: Optional[str] = None, *, is_admin: bool = False) -> dict:
+        u = (uid or "").strip()
+        e = (email or "").strip().lower()
+        with self._lock:
+            entry = self._gold_entry_locked(u, e)
+            if entry is not None:
+                yr = entry.get("since") or (
+                    str(datetime.fromtimestamp(entry["at"] / 1000.0, tz=VN_TZ).year) if entry.get("at") else str(datetime.now(tz=VN_TZ).year)
+                )
+                return {
+                    "active": True,
+                    "since": yr,
+                    "grantedAt": int(entry.get("at") or 0),
+                    "tier": "owner" if (is_admin or config.is_admin_identity(u, e)) else "vip",
+                }
+            if is_admin or config.is_admin_identity(u, e):
+                return {
+                    "active": True,
+                    "since": str(datetime.now(tz=VN_TZ).year),
+                    "grantedAt": 0,
+                    "tier": "owner",
+                }
+        return {"active": False, "since": "", "grantedAt": 0, "tier": "free"}
+
+    def set_user_gold(self, uid: str, enabled: bool, actor: str, email: str = "", note: str = "") -> dict:
+        u = (uid or "").strip()
+        if not u:
+            raise ValueError("Thiếu UID người dùng.")
+        now_ms = int(time.time() * 1000)
+        year_str = str(datetime.now(tz=VN_TZ).year)
+        with self._lock:
+            rec = self._users.get(u) or {}
+            em = (email or rec.get("email") or "").strip().lower()
+            gold_map = self._access.setdefault("gold", {})
+            if enabled:
+                prev = gold_map.get(u) or {}
+                gold_map[u] = {
+                    "at": int(prev.get("at") or now_ms),
+                    "since": str(prev.get("since") or year_str)[:12],
+                    "by": str(actor or "admin")[:80],
+                    "note": (note or prev.get("note") or "").strip()[:160],
+                    "email": em[:254],
+                }
+            else:
+                gold_map.pop(u, None)
+                if em:
+                    for k in [k for k, v in gold_map.items() if (v.get("email") or "").lower() == em]:
+                        gold_map.pop(k, None)
+            self._save_access_locked()
+            info = self.gold_info(u, em)
+            gold_count = len(self._access.get("gold") or {})
+        self.append_audit(
+            actor,
+            "user.gold_grant" if enabled else "user.gold_revoke",
+            target=em or u,
+            detail=(note or "").strip()[:120] or ("Đã cấp Locket Gold VIP" if enabled else "Đã thu hồi Locket Gold"),
+        )
+        return {"isGold": info["active"], "goldSince": info["since"], "goldCount": gold_count}
+
+    def submit_feedback(
+        self,
+        user: dict,
+        category: str,
+        message: str,
+        title: str = "",
+        meta: Optional[dict] = None,
+    ) -> dict:
+        cat = (category or "suggestion").strip().lower()
+        if cat not in VALID_FEEDBACK_CATEGORIES:
+            cat = "suggestion"
+        msg = (message or "").strip()[:1500]
+        if not msg:
+            raise ValueError("Nội dung gửi không được để trống.")
+        subj = (title or "").strip()[:120]
+        uid = str((user or {}).get("uid") or "").strip()[:64]
+        email = str((user or {}).get("email") or "").strip().lower()[:254]
+        now_ms = int(time.time() * 1000)
+        safe_meta = {}
+        if isinstance(meta, dict):
+            for k in ("platform", "appIcon", "cameraTheme", "screen", "appVersion"):
+                if meta.get(k):
+                    safe_meta[k] = str(meta[k]).strip()[:80]
+        item = {
+            "id": f"fb_{now_ms}_{secrets.token_hex(3)}",
+            "uid": uid,
+            "name": str((user or {}).get("name") or "")[:80],
+            "username": str((user or {}).get("username") or "")[:64],
+            "email": email,
+            "avatar": str((user or {}).get("avatar") or "")[:600] if (user or {}).get("avatar") else None,
+            "category": cat,
+            "title": subj,
+            "message": msg,
+            "meta": safe_meta,
+            "status": "open",
+            "adminNote": "",
+            "createdAt": now_ms,
+            "updatedAt": now_ms,
+        }
+        with self._lock:
+            self._feedback.insert(0, item)
+            self._feedback = self._feedback[:MAX_FEEDBACK_ENTRIES]
+            self._save_feedback_locked()
+        return copy.deepcopy(item)
+
+    def list_feedback(self, status: str = "all", category: str = "all", q: str = "") -> dict:
+        with self._lock:
+            raw_list = copy.deepcopy(self._feedback)
+            rows = []
+            for item in raw_list:
+                ginfo = self.gold_info(item.get("uid"), item.get("email"))
+                item["isGold"] = ginfo["active"]
+                item["goldSince"] = ginfo["since"]
+                rows.append(item)
+
+        counts = {
+            "all": len(rows),
+            "open": sum(1 for r in rows if r.get("status") == "open"),
+            "resolved": sum(1 for r in rows if r.get("status") == "resolved"),
+            "gold_request": sum(1 for r in rows if r.get("category") == "gold_request"),
+            "bug": sum(1 for r in rows if r.get("category") == "bug"),
+            "suggestion": sum(1 for r in rows if r.get("category") in ("suggestion", "feature")),
+        }
+        if status in VALID_FEEDBACK_STATUS:
+            rows = [r for r in rows if r.get("status") == status]
+        if category == "gold_request":
+            rows = [r for r in rows if r.get("category") == "gold_request"]
+        elif category == "bug":
+            rows = [r for r in rows if r.get("category") == "bug"]
+        elif category == "suggestion":
+            rows = [r for r in rows if r.get("category") in ("suggestion", "feature")]
+
+        query = (q or "").strip().lower()
+        if query:
+            rows = [
+                r for r in rows
+                if query in (r.get("name") or "").lower()
+                or query in (r.get("username") or "").lower()
+                or query in (r.get("email") or "").lower()
+                or query in (r.get("title") or "").lower()
+                or query in (r.get("message") or "").lower()
+                or query in (r.get("adminNote") or "").lower()
+            ]
+        return {"items": rows, "counts": counts}
+
+    def update_feedback(
+        self,
+        fid: str,
+        *,
+        status: Optional[str] = None,
+        admin_note: Optional[str] = None,
+        actor: str = "admin",
+    ) -> Optional[dict]:
+        target = (fid or "").strip()
+        if not target:
+            return None
+        updated = None
+        with self._lock:
+            for item in self._feedback:
+                if item.get("id") == target:
+                    if status in VALID_FEEDBACK_STATUS:
+                        item["status"] = status
+                    if admin_note is not None:
+                        item["adminNote"] = str(admin_note).strip()[:300]
+                    item["updatedAt"] = int(time.time() * 1000)
+                    updated = copy.deepcopy(item)
+                    ginfo = self.gold_info(updated.get("uid"), updated.get("email"))
+                    updated["isGold"] = ginfo["active"]
+                    updated["goldSince"] = ginfo["since"]
+                    break
+            if updated is not None:
+                self._save_feedback_locked()
+        if updated is not None:
+            self.append_audit(actor, "feedback.update", target=target, detail=f"status={updated.get('status')}")
+        return updated
+
+    def delete_feedback(self, fid: str, actor: str = "admin") -> bool:
+        target = (fid or "").strip()
+        with self._lock:
+            before = len(self._feedback)
+            self._feedback = [item for item in self._feedback if item.get("id") != target]
+            removed = len(self._feedback) < before
+            if removed:
+                self._save_feedback_locked()
+        if removed:
+            self.append_audit(actor, "feedback.delete", target=target)
+        return removed
+
     def update_access(self, patch: dict, actor: str) -> dict:
         with self._lock:
             cur = copy.deepcopy(self._access)
@@ -913,6 +1144,8 @@ class AdminStore:
                 log_cnt = int(rec.get("logins") or 0)
                 score = m_cnt * 3 + msg_cnt * 2 + tool_cnt + log_cnt
                 em = rec.get("email") or ""
+                is_adm = config.is_admin_identity(uid, em)
+                g_info = self.gold_info(uid, em, is_admin=is_adm)
                 top_candidates.append({
                     "uid": uid,
                     "name": rec.get("name") or rec.get("username") or (em.split("@")[0] if em else uid[:12]),
@@ -926,7 +1159,8 @@ class AdminStore:
                     "tools": tool_cnt,
                     "logins": log_cnt,
                     "online": uid in online_uids,
-                    "isAdmin": config.is_admin_identity(uid, em),
+                    "isAdmin": is_adm,
+                    "isGold": g_info["active"],
                     "_score": score,
                 })
             top_candidates.sort(key=lambda r: (r["_score"], r["moments"], r["logins"]), reverse=True)
@@ -940,6 +1174,8 @@ class AdminStore:
 
             totals = copy.deepcopy(self._metrics.get("totals") or {})
             banned_count = len(self._access.get("banned") or {})
+            gold_count = len(self._access.get("gold") or {})
+            open_feedback_count = sum(1 for f in self._feedback if f.get("status") == "open")
             whitelist_count = len(self._access.get("whitelist") or [])
             invite_count = len(self._access.get("invites") or [])
             recent_err_count = len(self._recent_errors)
@@ -951,6 +1187,8 @@ class AdminStore:
                 "disabledFeaturesCount": sum(1 for v in self._site_config["features"].values() if not v),
                 "whitelistCount": whitelist_count,
                 "inviteCount": invite_count,
+                "goldCount": gold_count,
+                "openFeedbackCount": open_feedback_count,
             }
 
         thumbs_b, thumbs_files = _dir_stats(config.THUMBS_DIR)
@@ -967,6 +1205,8 @@ class AdminStore:
                 "totalUsers": len(known_uids),
                 "newToday": new_today,
                 "bannedUsers": banned_count,
+                "goldUsers": gold_count,
+                "openFeedback": open_feedback_count,
                 "dau": len(dau_uids),
                 "wau": len(wau_set),
                 "mau": len(mau_set),
@@ -1101,6 +1341,30 @@ class AdminStore:
                         "lastIp": "",
                     }
 
+            for uid, ginfo in (self._access.get("gold") or {}).items():
+                if uid not in merged:
+                    merged[uid] = {
+                        "uid": uid,
+                        "email": ginfo.get("email") or "",
+                        "name": (ginfo.get("email") or "").split("@")[0] if ginfo.get("email") else uid[:12],
+                        "firstName": "",
+                        "lastName": "",
+                        "username": "",
+                        "avatar": None,
+                        "firstSeen": ginfo.get("at") or 0,
+                        "lastSeen": ginfo.get("at") or 0,
+                        "logins": 0,
+                        "moments": 0,
+                        "photos": 0,
+                        "videos": 0,
+                        "photobooth": 0,
+                        "messages": 0,
+                        "tools": 0,
+                        "invited": False,
+                        "note": "",
+                        "lastIp": "",
+                    }
+
             rows = []
             for uid, rec in merged.items():
                 ban = self._access["banned"].get(uid)
@@ -1110,6 +1374,8 @@ class AdminStore:
                 email = rec.get("email") or ""
                 is_adm = config.is_admin_identity(uid, email)
                 is_wl = (uid in wl_set) or (bool(email) and email.lower() in wl_set)
+                g_entry = self._gold_entry_locked(uid, email)
+                g_info = self.gold_info(uid, email, is_admin=is_adm)
                 first_seen = int(rec.get("firstSeen") or 0)
                 is_new_today = bool(first_seen and _today_key(first_seen / 1000.0) == today)
                 rows.append({
@@ -1138,6 +1404,10 @@ class AdminStore:
                     "banReason": (ban or {}).get("reason") or "",
                     "invited": bool(rec.get("invited")),
                     "whitelisted": is_wl,
+                    "isGold": g_info["active"],
+                    "goldSince": g_info["since"],
+                    "goldTier": g_info["tier"],
+                    "goldNote": str((g_entry or {}).get("note") or ""),
                     "note": str(rec.get("note") or ""),
                     "isAdmin": is_adm,
                 })
@@ -1147,6 +1417,7 @@ class AdminStore:
             "all": total,
             "online": sum(1 for r in rows if r["online"]),
             "today": sum(1 for r in rows if r["newToday"]),
+            "gold": sum(1 for r in rows if r["isGold"]),
             "whitelist": sum(1 for r in rows if r["whitelisted"]),
             "banned": sum(1 for r in rows if r["banned"]),
         }
@@ -1155,6 +1426,8 @@ class AdminStore:
             rows = [r for r in rows if r["online"]]
         elif filt == "today":
             rows = [r for r in rows if r["newToday"]]
+        elif filt == "gold":
+            rows = [r for r in rows if r["isGold"]]
         elif filt == "whitelist":
             rows = [r for r in rows if r["whitelisted"]]
         elif filt == "banned":

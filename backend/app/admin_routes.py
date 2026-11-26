@@ -248,10 +248,20 @@ class WhitelistToggleBody(BaseModel):
     enabled: bool
 
 
+class GoldToggleBody(BaseModel):
+    enabled: bool
+    note: str = Field(default="", max_length=160)
+
+
+class FeedbackPatchBody(BaseModel):
+    status: Optional[Literal["open", "resolved"]] = None
+    adminNote: Optional[str] = Field(default=None, max_length=300)
+
+
 @router.get("/api/admin/users")
 def admin_users(
     q: str = Query(default="", max_length=100),
-    filter: str = Query(default="all", pattern="^(all|online|today|whitelist|banned)$"),
+    filter: str = Query(default="all", pattern="^(all|online|today|gold|whitelist|banned)$"),
     sort: str = Query(default="recent", pattern="^(recent|moments|sessions|newest)$"),
     _actor: str = Depends(require_admin),
 ):
@@ -278,6 +288,14 @@ def admin_user_whitelist(uid: str, body: WhitelistToggleBody, actor: str = Depen
     detail = admin_store.get_user_detail(uid, store.active_summary())
     email = (detail or {}).get("email") or ""
     res = admin_store.set_user_whitelist(uid, body.enabled, actor=actor, email=email)
+    return {"ok": True, **res}
+
+
+@router.post("/api/admin/users/{uid}/gold")
+def admin_user_gold(uid: str, body: GoldToggleBody, actor: str = Depends(require_admin)):
+    detail = admin_store.get_user_detail(uid, store.active_summary())
+    email = (detail or {}).get("email") or ""
+    res = admin_store.set_user_gold(uid, body.enabled, actor=actor, email=email, note=body.note)
     return {"ok": True, **res}
 
 
@@ -481,6 +499,31 @@ async def admin_diagnostics(actor: str = Depends(require_admin)):
 @router.get("/api/admin/logs")
 def admin_logs(_actor: str = Depends(require_admin)):
     return admin_store.recent_logs()
+
+
+# ------------------------------------------------------------------ user feedback & Gold requests inbox
+@router.get("/api/admin/feedback")
+def admin_list_feedback(
+    status: str = Query(default="all", pattern="^(all|open|resolved)$"),
+    category: str = Query(default="all", pattern="^(all|gold_request|bug|suggestion)$"),
+    q: str = Query(default="", max_length=100),
+    _actor: str = Depends(require_admin),
+):
+    return admin_store.list_feedback(status=status, category=category, q=q)
+
+
+@router.patch("/api/admin/feedback/{fid}")
+def admin_patch_feedback(fid: str, body: FeedbackPatchBody, actor: str = Depends(require_admin)):
+    updated = admin_store.update_feedback(fid, status=body.status, admin_note=body.adminNote, actor=actor)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy mục phản hồi.")
+    return {"ok": True, "item": updated}
+
+
+@router.delete("/api/admin/feedback/{fid}")
+def admin_delete_feedback(fid: str, actor: str = Depends(require_admin)):
+    removed = admin_store.delete_feedback(fid, actor=actor)
+    return {"ok": True, "removed": removed}
 
 
 @router.get("/api/admin/export/users.csv")

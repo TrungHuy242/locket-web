@@ -273,6 +273,19 @@ export function AdminOverview({ data, loading, onNavigate }) {
             <div className="adm-kpi-sub">Tin nhắn: <b>{totals.messages}</b> · Nhạc/Thời tiết/Vị trí: <b>{toolsTotal}</b></div>
           </div>
 
+          <button type="button" className="adm-kpi" onClick={() => onNavigate?.(kpi.openFeedback > 0 ? 'feedback' : 'users', kpi.openFeedback > 0 ? null : { filter: 'gold' })}>
+            <div className="adm-kpi-top"><span>👑 VIP Gold &amp; Hộp thư</span><Icon name="crown" /></div>
+            <div className="adm-kpi-main">
+              <div className="adm-kpi-val">{kpi.goldUsers ?? 0}</div>
+              {kpi.openFeedback > 0 ? (
+                <span className="adm-delta down">{kpi.openFeedback} thư chờ xử lý</span>
+              ) : (
+                <span className="adm-delta up">Hộp thư sạch</span>
+              )}
+            </div>
+            <div className="adm-kpi-sub">{kpi.openFeedback > 0 ? 'Bấm để duyệt yêu cầu Gold / góp ý →' : 'Bấm để xem thành viên VIP Gold →'}</div>
+          </button>
+
           <button type="button" className="adm-kpi" onClick={() => onNavigate?.('ops')}>
             <div className="adm-kpi-top"><span>Sức khỏe Máy chủ</span><Icon name={health.errors5xx > 0 ? 'warning' : 'cloud'} /></div>
             <div className="adm-kpi-main">

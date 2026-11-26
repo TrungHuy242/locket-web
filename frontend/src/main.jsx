@@ -15,6 +15,7 @@ import './styles/pwa.css';
 import './styles/photobooth.css';
 import './styles/captions.css';
 import './styles/motion.css';
+import './styles/native_v2.css';
 import { registerServiceWorker } from './lib/pwa.js';
 import { applyTheme } from './lib/settings.js';
 

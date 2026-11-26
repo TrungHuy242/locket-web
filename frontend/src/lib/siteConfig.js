@@ -22,6 +22,7 @@ export const DEFAULT_SITE_CONFIG = {
   features: {
     photobooth: true,
     boothVideo: true,
+    cameraLooks: true,
     smartCaptions: true,
     zipExport: true,
     chat: true,

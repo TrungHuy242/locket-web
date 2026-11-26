@@ -1087,3 +1087,27 @@ button.adm-kpi:active { transform: scale(.98); }
 .adm-log-detail { margin-top: 3px; color: var(--muted); font-weight: 600; word-break: break-word; }
 
 .adm-spin { animation: spin .9s linear infinite; }
+
+/* ------------------------------------------------------------------ Locket Gold VIP & Feedback Inbox */
+.adm-tag.gold {
+  background: rgba(255, 198, 41, .2);
+  color: #ffd43b;
+  border: 1px solid rgba(255, 198, 41, .4);
+}
+.adm-fb-card { display: flex; flex-direction: column; gap: 12px; }
+.adm-fb-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.adm-fb-body {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+.adm-fb-title { display: block; font-size: 15px; font-weight: 900; margin-bottom: 4px; }
+.adm-fb-msg { font-size: 14px; font-weight: 600; color: var(--label-2); line-height: 1.45; white-space: pre-wrap; }
+.adm-fb-note-row { display: flex; align-items: center; gap: 8px; }
+.adm-fb-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

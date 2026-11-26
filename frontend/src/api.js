@@ -98,12 +98,20 @@ export const api = {
 
   me: () => request('GET', '/api/me'),
   updateName: (firstName, lastName) => request('PATCH', '/api/me', { firstName, lastName }),
+  updateBirthdate: (birthdate) => request('PATCH', '/api/me/birthdate', { birthdate }),
+  changePassword: (newPassword) => request('POST', '/api/me/password', { newPassword }),
+  sendPasswordReset: () => request('POST', '/api/me/password-reset'),
   updateAvatar: (blob) => {
     const form = new FormData();
     form.append('image', blob, 'avatar.jpg');
     return request('POST', '/api/me/avatar', form);
   },
   setNotifications: (enabled) => request('POST', '/api/me/notifications', { enabled }),
+  submitFeedback: ({ category = 'suggestion', title = '', message = '', meta = null }) => request(
+    'POST',
+    '/api/feedback',
+    { category, title, message, meta },
+  ),
 
   captions: () => request('GET', '/api/captions'),
   feed: ({ before, limit = 30, refresh = false } = {}) => request('GET',
@@ -221,10 +229,18 @@ export const api = {
     userDetail: (uid) => request('GET', `/api/admin/users/${enc(uid)}`),
     saveUserNote: (uid, note) => request('PUT', `/api/admin/users/${enc(uid)}/note`, { note }),
     toggleUserWhitelist: (uid, enabled) => request('POST', `/api/admin/users/${enc(uid)}/whitelist`, { enabled }),
+    toggleUserGold: (uid, enabled, note = '') => request('POST', `/api/admin/users/${enc(uid)}/gold`, { enabled, note }),
     banUser: (uid, reason = '') => request('POST', `/api/admin/users/${enc(uid)}/ban`, { reason }),
     unbanUser: (uid) => request('POST', `/api/admin/users/${enc(uid)}/unban`),
     kickUser: (uid) => request('POST', `/api/admin/users/${enc(uid)}/kick`),
     kickAll: () => request('POST', '/api/admin/sessions/kick-all'),
+    feedback: ({ status = 'all', category = 'all', q = '' } = {}) => {
+      const params = new URLSearchParams({ status, category });
+      if (q) params.set('q', q);
+      return request('GET', `/api/admin/feedback?${params}`);
+    },
+    updateFeedback: (fid, patch) => request('PATCH', `/api/admin/feedback/${enc(fid)}`, patch),
+    deleteFeedback: (fid) => request('DELETE', `/api/admin/feedback/${enc(fid)}`),
     getConfig: () => request('GET', '/api/admin/config'),
     saveConfig: (patch) => request('PUT', '/api/admin/config', patch),
     getAccess: () => request('GET', '/api/admin/access'),

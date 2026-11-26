@@ -6,13 +6,14 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { api } from '../api.js';
 import { Icon } from '../lib/icons.jsx';
 import { clock, downloadBlob, thumb, vibrate, wait } from '../lib/format.js';
-import { getSettings } from '../lib/settings.js';
+import { getSettings, setSetting, useSettings } from '../lib/settings.js';
 import { useSiteConfig } from '../lib/siteConfig.js';
 import { useApp } from '../store.js';
 import { ui } from '../ui/overlays.jsx';
 import { Spinner } from '../ui/kit.jsx';
 import { ErrorBoundary } from '../components/AppStatus.jsx';
 import { FILTERS, FilterRenderer, centerCrop, filteredCanvas, webglSupported } from '../lib/filters.js';
+import { createLiveFaceTracker, drawLookOnSquareCanvas, getLookThumbUrl } from '../lib/cameraLooks.js';
 import { ASPECTS, defaultOptions, isSquareNative, loadStyle } from '../lib/boothConfig.js';
 import { playBeep, playShutter } from '../lib/boothAudio.js';
 import {
@@ -27,11 +28,15 @@ const PhotoboothEditor = lazy(() => loadBoothEditor().then((m) => ({ default: m.
 import { StylePicker } from './camera/StylePicker.jsx';
 import { CropSheet } from './camera/CropSheet.jsx';
 import { BoothOverlays, CaptionEditor, FilterTray, PreviewLayers, RecipientsBar } from './camera/CameraOverlays.jsx';
+import { LiveLookOverlay, openLooksSheet } from './camera/LooksSheet.jsx';
+import { openCameraThemeSheet } from './profile/GoldSheets.jsx';
 
 export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHistory }) {
   const user = useApp((s) => s.user);
   const friends = useApp((s) => s.friends);
   const boothEnabled = useSiteConfig((s) => s.features.photobooth);
+  const looksEnabled = useSiteConfig((s) => s.features.cameraLooks !== false);
+  const settings = useSettings();
 
   const vfRef = useRef(null);
   const videoRef = useRef(null);
@@ -83,6 +88,18 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   const [timerCount, setTimerCount] = useState(0);
   const timerRef = useRef({ running: false, cancel: false });
   const [draggingFile, setDraggingFile] = useState(false);
+  const [fitExpand, setFitExpand] = useState(false);
+  // AR Face Looks ("Diện mạo")
+  const [activeLook, setActiveLook] = useState(null);
+  const [lookManual, setLookManual] = useState({ dx: 0, dy: 0, scale: 1, rot: 0 });
+  const [faceBox, setFaceBox] = useState(null);
+  const activeLookRef = useRef(activeLook);
+  activeLookRef.current = activeLook;
+  const lookManualRef = useRef(lookManual);
+  lookManualRef.current = lookManual;
+  const faceBoxRef = useRef(faceBox);
+  faceBoxRef.current = faceBox;
+  const trackerRef = useRef(null);
   const filterRef = useRef({ id: filterId, amount: filterAmount });
   filterRef.current = { id: filterId, amount: filterAmount };
   const glActive = glOk && !glLost && filterId !== 'none';
@@ -437,7 +454,11 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   // a square, unfiltered frame (mirrored like saved selfies); the editor crops and filters it
   const boothFrame = () => {
     const v = videoRef.current;
-    return filteredCanvas(v, { filter: 'none', width: BOOTH_SIZE, height: BOOTH_SIZE, crop: centerCrop(v.videoWidth, v.videoHeight, 1, digitalZoom()), mirror: shouldMirror() });
+    const cnv = filteredCanvas(v, { filter: 'none', width: BOOTH_SIZE, height: BOOTH_SIZE, crop: centerCrop(v.videoWidth, v.videoHeight, 1, digitalZoom()), mirror: shouldMirror() });
+    if (activeLookRef.current) {
+      drawLookOnSquareCanvas(cnv.getContext('2d'), BOOTH_SIZE, activeLookRef.current, faceBoxRef.current, lookManualRef.current);
+    }
+    return cnv;
   };
   const captureOneBoothShot = async () => {
     const c = cam.current;
@@ -636,6 +657,9 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
       rawCanvas = document.createElement('canvas');
       rawCanvas.width = rawCanvas.height = PHOTO_SIZE;
       drawSquare(rawCanvas.getContext('2d'), video, video.videoWidth, video.videoHeight, PHOTO_SIZE, { mirror: shouldMirror(), zoomBy: digitalZoom() });
+      if (activeLookRef.current) {
+        drawLookOnSquareCanvas(rawCanvas.getContext('2d'), PHOTO_SIZE, activeLookRef.current, faceBoxRef.current, lookManualRef.current);
+      }
       if (glOk && look.id !== 'none') {
         canvas = filteredCanvas(rawCanvas, { filter: look.id, amount: look.amount, width: PHOTO_SIZE, height: PHOTO_SIZE });
       } else {
@@ -681,6 +705,39 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
   }, [timerSec, takePhoto, cancelTimer]);
   useEffect(() => () => { timerRef.current.cancel = true; }, []);
 
+  // Live Face Tracking loop (8 fps) — active only when a Look ("Diện mạo") is equipped
+  useEffect(() => {
+    if (!active || !!preview || editor || !activeLook) return undefined;
+    if (!trackerRef.current) trackerRef.current = createLiveFaceTracker();
+    const tracker = trackerRef.current;
+    let cancelled = false;
+    const id = setInterval(async () => {
+      const v = videoRef.current;
+      if (cancelled || !v || v.readyState < 2) return;
+      const box = await tracker.detect(v, {
+        mirror: cam.current.facing === 'user' && getSettings().mirrorFront,
+        zoomBy: cam.current.caps.zoom ? 1 : zoomRef.current,
+      });
+      if (!cancelled && box) setFaceBox(box);
+    }, 125);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [active, preview, editor, activeLook]);
+
+  const toggleMicSetting = async () => {
+    const next = !settings.recordAudio;
+    if (next) {
+      try {
+        const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mic.getTracks().forEach((t) => t.stop());
+      } catch {
+        ui.warning('Trình duyệt chưa cấp quyền micro');
+        return;
+      }
+    }
+    setSetting('recordAudio', next);
+    ui.info(next ? 'Đã bật ghi âm khi giữ quay video' : 'Đã tắt micro khi quay video', 1300);
+  };
+
   /* ------------------------------------------------ video */
   const rec = useRef({ recorder: null, done: null, pressing: false, preparing: false, holdTimer: 0 });
 
@@ -704,15 +761,21 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     if (!mime) { ui.warning('Trình duyệt này không hỗ trợ quay video'); return false; }
     if (!c.stream || !video?.videoWidth) { ui.warning('Camera chưa sẵn sàng'); return false; }
     const mirror = shouldMirror();
+    const useCanvasRec = CANVAS_RECORDING || !!activeLookRef.current;
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = VIDEO_SIZE;
     const ctx = canvas.getContext('2d');
     // with a filter on, record the WebGL preview (already filtered) instead of the raw camera
     const src = glOk && filterRef.current.id !== 'none' && glRef.current && rendererRef.current?.isAvailable() ? glRef.current : video;
-    const paint = () => drawSquare(ctx, src, src.videoWidth || src.width, src.videoHeight || src.height, VIDEO_SIZE, { mirror, zoomBy: digitalZoom() });
+    const paint = () => {
+      drawSquare(ctx, src, src.videoWidth || src.width, src.videoHeight || src.height, VIDEO_SIZE, { mirror, zoomBy: digitalZoom() });
+      if (activeLookRef.current) {
+        drawLookOnSquareCanvas(ctx, VIDEO_SIZE, activeLookRef.current, faceBoxRef.current, lookManualRef.current);
+      }
+    };
     paint();
     const still = await toBlob(canvas, 0.9);            // first frame: the moment's still image
-    const out = CANVAS_RECORDING ? canvas.captureStream(30) : new MediaStream(c.stream.getVideoTracks());
+    const out = useCanvasRec ? canvas.captureStream(30) : new MediaStream(c.stream.getVideoTracks());
     let mic = null;
     if (getSettings().recordAudio) {
       try {
@@ -722,7 +785,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     }
     if (!c.stream) {
       mic?.getTracks().forEach((t) => t.stop());
-      if (CANVAS_RECORDING) out.getTracks().forEach((t) => t.stop());
+      if (useCanvasRec) out.getTracks().forEach((t) => t.stop());
       return false;
     }
     const chunks = [];
@@ -744,7 +807,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
     // a timer (not rAF) drives frames so the recording keeps its frame rate when rAF is throttled
     const timer = setInterval(() => {
       const elapsed = performance.now() - startedAt;
-      if (CANVAS_RECORDING) paint();
+      if (useCanvasRec) paint();
       if (ringRef.current) ringRef.current.style.strokeDashoffset = RING * (1 - Math.min(1, elapsed / MAX_RECORD_MS));
       if (recDotRef.current) recDotRef.current.textContent = `0:${String(Math.floor(elapsed / 1000)).padStart(2, '0')}`;
       if (elapsed >= MAX_RECORD_MS) stopRecording();
@@ -754,10 +817,10 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
         clearInterval(timer);
         if (torch) c.track?.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
         mic?.getTracks().forEach((t) => t.stop());
-        if (CANVAS_RECORDING) out.getTracks().forEach((t) => t.stop());   // never stop the camera's own track
+        if (useCanvasRec) out.getTracks().forEach((t) => t.stop());   // never stop the camera's own track
         resolve({
           video: new Blob(chunks, { type: mime.split(';')[0] }), image: still, ms: performance.now() - startedAt,
-          mirrorVideo: !CANVAS_RECORDING && mirror,   // raw camera frames: server (and preview) flip them
+          mirrorVideo: !useCanvasRec && mirror,   // raw camera frames: server (and preview) flip them
           audio: !!mic,
         });
       };
@@ -992,7 +1055,7 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
       <div className="cam-title" data-when="preview">Gửi đến...
         <button type="button" className="icon-btn pressable" aria-label="Lưu vào máy" onClick={() => { saveToDevice(); ui.success('Đã lưu vào máy'); }}><Icon name="download" /></button>
       </div>
-      <div ref={vfRef} className={`viewfinder ${mirrored ? 'mirror' : ''} ${switching ? 'switching' : ''} ${draggingFile ? 'dropping' : ''}`}
+      <div ref={vfRef} className={`viewfinder ${mirrored ? 'mirror' : ''} ${fitExpand ? 'fit-contain' : ''} ${switching ? 'switching' : ''} ${draggingFile ? 'dropping' : ''}`}
         style={{ '--zoom': zoomScale }} onPointerUp={onViewfinderUp}
         onDragOver={(e) => { if (!preview && e.dataTransfer?.types?.includes('Files')) { e.preventDefault(); setDraggingFile(true); } }}
         onDragLeave={() => setDraggingFile(false)}
@@ -1009,6 +1072,15 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
         }}>
         <video ref={videoRef} className="live" playsInline muted autoPlay />
         <canvas ref={glRef} className="live live-gl" hidden={!glActive || !!preview} aria-hidden="true" />
+        {!preview && activeLook ? (
+          <LiveLookOverlay
+            look={activeLook}
+            faceBox={faceBox}
+            manual={lookManual}
+            onChangeManual={setLookManual}
+            onClear={() => setActiveLook(null)}
+          />
+        ) : null}
         <BoothOverlays mode={mode} preview={preview} run={run} timerCount={timerCount} booth={booth} boothRatio={boothRatio}
           onCancel={cancelBooth} onFinishEarly={finishManualBooth} onCancelTimer={cancelTimer}
           onToggleShots={() => {
@@ -1050,19 +1122,54 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
         ) : null}
         <div ref={flashRef} className="flash-overlay" />
         <div ref={recDotRef} className="rec-dot" hidden={!recording}>0:00</div>
-        <button type="button" className={`vf-btn fx ${trayOpen || filterId !== 'none' ? 'on' : ''}`} data-when="capture" aria-label="Bộ lọc" aria-pressed={trayOpen} onClick={openTray}>
+
+        {/* Native iOS top-left & top-right viewfinder controls */}
+        <button type="button" className={`vf-btn vf-tl flash ${flashOn ? 'on' : ''}`} data-when="capture" aria-label="Đèn flash" onClick={() => setFlashOn((v) => !v)}>
+          <Icon name={flashOn ? 'bolt' : 'boltOff'} />
+        </button>
+        <button type="button" className={`vf-btn vf-tl2 mic ${settings.recordAudio ? 'on' : ''}`} data-when="capture" aria-label="Micro khi quay video" title="Bật/tắt micro khi quay video" onClick={toggleMicSetting}>
+          <Icon name={settings.recordAudio ? 'mic' : 'micOff'} />
+        </button>
+        <button type="button" className="vf-btn vf-tr zoom" data-when="capture" aria-label="Thu phóng" onClick={() => { const z = zoom === 1 ? 2 : 1; setZoom(z); applyZoom(z); }}>{zoom}x</button>
+
+        {/* Bottom viewfinder controls: Diện mạo, Bộ lọc, Mở rộng ↖↘, Hẹn giờ & Chủ đề */}
+        {looksEnabled ? (
+          <button
+            type="button"
+            className={`vf-btn vf-bl looks ${activeLook ? 'on' : ''} ${trayOpen ? 'tucked' : ''}`}
+            data-when="capture"
+            aria-label="Diện mạo"
+            title="Diện mạo & Sticker khuôn mặt"
+            onClick={() => {
+              setTrayOpen(false);
+              openLooksSheet({
+                activeLook,
+                onSelect: (lk) => {
+                  setActiveLook(lk);
+                  setLookManual({ dx: 0, dy: 0, scale: 1, rot: 0 });
+                },
+              });
+            }}
+          >
+            {activeLook ? <img className="vf-look-mini" src={getLookThumbUrl(activeLook)} alt="" /> : <Icon name="face" />}
+          </button>
+        ) : null}
+        <button type="button" className={`vf-btn vf-bl2 fx ${trayOpen || filterId !== 'none' ? 'on' : ''}`} data-when="capture" aria-label="Bộ lọc" aria-pressed={trayOpen} onClick={openTray}>
           <Icon name="filters" />
         </button>
+        <button type="button" className={`vf-btn vf-bc fit ${fitExpand ? 'on' : ''} ${trayOpen ? 'tucked' : ''}`} data-when="capture" aria-label="Đổi tỉ lệ khung ngắm" title="Vừa khung / Đầy khung" onClick={() => setFitExpand((v) => !v)}>
+          <Icon name={fitExpand ? 'shrink' : 'expand'} />
+        </button>
         {mode === 'photo' ? (
-          <button type="button" className={`vf-btn timer ${timerSec ? 'on' : ''}`} data-when="capture" aria-label="Hẹn giờ chụp" title="Hẹn giờ chụp"
+          <button type="button" className={`vf-btn vf-br2 timer ${timerSec ? 'on' : ''} ${trayOpen ? 'tucked' : ''}`} data-when="capture" aria-label="Hẹn giờ chụp" title="Hẹn giờ chụp"
             onClick={() => setTimerSec((s) => (s === 0 ? 3 : s === 3 ? 5 : s === 5 ? 10 : 0))}>
             {timerSec ? `${timerSec}s` : <Icon name="timer" />}
           </button>
         ) : null}
-        <button type="button" className={`vf-btn flash ${flashOn ? 'on' : ''} ${trayOpen ? 'tucked' : ''}`} data-when="capture" aria-label="Đèn flash" onClick={() => setFlashOn((v) => !v)}>
-          <Icon name={flashOn ? 'bolt' : 'boltOff'} />
+        <button type="button" className={`vf-btn vf-br theme-btn ${settings.cameraTheme && settings.cameraTheme !== 'classic' ? 'on' : ''} ${trayOpen ? 'tucked' : ''}`} data-when="capture" aria-label="Chủ đề máy ảnh" title="Chủ đề máy ảnh" onClick={openCameraThemeSheet}>
+          <Icon name="palette" />
         </button>
-        <button type="button" className={`vf-btn zoom ${trayOpen ? 'tucked' : ''}`} data-when="capture" aria-label="Thu phóng" onClick={() => { const z = zoom === 1 ? 2 : 1; setZoom(z); applyZoom(z); }}>{zoom}x</button>
+
         <CaptionEditor preview={preview} preset={preset} placeholder={placeholder} captionRef={captionRef}
           onCaptionInput={onCaptionInput} musicPlaying={previewMusicPlaying} onToggleMusic={togglePreviewMusic} />
       </div>
@@ -1074,8 +1181,13 @@ export function CameraPage({ active, latest, onPreviewChange, onPosted, onOpenHi
         </div>
       ) : null}
       <div className="cam-controls" data-when="capture">
-        <button type="button" className="cam-side" aria-label={mode === 'booth' ? 'Chọn 2–6 ảnh ghép Photobooth' : 'Chọn ảnh hoặc video từ thư viện'}
-          onClick={() => (mode === 'booth' ? boothFileRef.current?.click() : fileRef.current?.click())}><Icon name="gallery" /></button>
+        <button type="button" className="cam-side cam-card-picker pressable" aria-label={mode === 'booth' ? 'Chọn 2–6 ảnh ghép Photobooth' : 'Chọn ảnh hoặc video từ thư viện'}
+          onClick={() => (mode === 'booth' ? boothFileRef.current?.click() : fileRef.current?.click())}>
+          <span className="photo-stack-back" aria-hidden="true" />
+          <span className="photo-stack-front">
+            {latest?.image ? <img src={thumb(latest.image, 128)} alt="" /> : <Icon name="gallery" />}
+          </span>
+        </button>
         <button ref={shutterRef} type="button" className={`shutter ${recording ? 'recording' : ''} ${mode === 'booth' ? 'booth' : ''} ${run && !run.manual ? 'running' : ''}`}
           aria-label={mode === 'booth' ? `Chụp photobooth ${booth.shots} ảnh` : 'Chạm để chụp, giữ để quay video'}
           onPointerDown={onShutterDown} onPointerUp={() => release(false)} onPointerCancel={() => release(true)}

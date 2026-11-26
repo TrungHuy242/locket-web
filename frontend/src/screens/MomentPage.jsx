@@ -4,7 +4,7 @@ import { Avatar } from '../components/Avatar.jsx';
 import { CaptionPill } from '../components/CaptionPill.jsx';
 import { MyReactions } from './Interactions.jsx';
 import { Icon } from '../lib/icons.jsx';
-import { ago, fmtDuration, fullDate } from '../lib/format.js';
+import { ago, fmtDuration, fullDate, thumb } from '../lib/format.js';
 
 // Locket stores clips as HEVC (hvc1). Safari and many Chrome/Edge builds decode it; where the browser
 // cannot (error, no picture, or stuck loading), the same clip is requested as H.264, which the server
@@ -81,6 +81,9 @@ export const MomentPage = memo(function MomentPage({ moment: m, active, playingM
 
   return (
     <section className="page page-moment" data-id={m.id}>
+      <div className="moment-ambient" aria-hidden="true">
+        <img src={thumb(m.image, 128)} alt="" loading="lazy" decoding="async" draggable="false" />
+      </div>
       <div className="moment-media" onClick={onMediaClick}>
         <img src={m.image} alt={m.caption || `Khoảnh khắc của ${m.user.name}`} loading={active ? 'eager' : 'lazy'} decoding="async" draggable="false" />
         {m.video && active ? <MomentVideo src={m.video} poster={m.image} /> : null}
@@ -90,7 +93,7 @@ export const MomentPage = memo(function MomentPage({ moment: m, active, playingM
         {heartPop ? <span key={heartPop} className="dbl-heart" aria-hidden="true">💛</span> : null}
       </div>
       <div className="moment-meta">
-        <Avatar user={m.user} />
+        {!m.mine ? <Avatar user={m.user} /> : null}
         <span>{m.mine ? 'Bạn' : (m.user.firstName || m.user.name)}</span>
         <span className="ago" title={m.approxDate ? 'Thời gian ước lượng theo tin nhắn nhắc tới khoảnh khắc này' : fullDate(m.createdAt)}>
           {m.approxDate ? '≈ ' : ''}{ago(m.createdAt)}

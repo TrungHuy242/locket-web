@@ -3,8 +3,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { Avatar } from '../components/Avatar.jsx';
+import { getCameraTheme } from '../lib/cameraThemes.js';
 import { Icon } from '../lib/icons.jsx';
 import { ago, downloadBlob, thumb, vibrate } from '../lib/format.js';
+import { useSettings } from '../lib/settings.js';
 import { siteConfigStore, useSiteConfig } from '../lib/siteConfig.js';
 import { RECONNECT_EVENT } from '../components/AppStatus.jsx';
 import { EMOJI_PALETTE, QUICK_EMOJI, appStore, loadFriends, loadNotifications, loadUnread, readFeedCache, refreshMe, useApp, writeFeedCache } from '../store.js';
@@ -106,6 +108,10 @@ export function Home({ under }) {
   const unread = useApp((s) => s.unread);
   const notifUnread = useApp((s) => s.notifUnread);
   const chatEnabled = useSiteConfig((s) => s.features.chat) || isAdmin;
+  const settings = useSettings();
+  const hasGold = !!(user?.gold?.active || isAdmin);
+  const showGoldBadge = hasGold && settings.goldBadge !== false;
+  const camTheme = getCameraTheme(settings.cameraTheme, hasGold);
   const section = useSection();
   const covered = !!section;
 
@@ -565,7 +571,17 @@ export function Home({ under }) {
   }
 
   return (
-    <div className={`home ${under ? `under-${under}` : ''}`} data-view={view} data-mode={previewing ? 'preview' : 'capture'}>
+    <div
+      className={`home ${under ? `under-${under}` : ''} cam-theme-${camTheme.id}`}
+      data-view={view}
+      data-mode={previewing ? 'preview' : 'capture'}
+      style={{
+        '--cam-shell-grad': camTheme.shellGrad,
+        '--cam-shutter-ring': camTheme.shutterRing,
+        '--cam-pill-bg': camTheme.pillBg,
+        '--cam-pill-text': camTheme.pillText,
+      }}
+    >
       {pullDist > 20 || refreshing ? (
         <div className="ptr-pill" role="status">
           {refreshing ? <><span className="spinner" /> Đang làm mới…</> : pullDist >= 72 ? 'Thả ra để làm mới' : 'Kéo xuống để làm mới'}
@@ -585,23 +601,38 @@ export function Home({ under }) {
           : <section className="page page-empty"><div className="empty">{emptyBody}</div></section>}
       </div>
 
+      {/* Native iOS Topbar: Left Megaphone/Updates · Center Friends/Filter Pill · Right User Avatar */}
       <header className="topbar">
-        <button type="button" className="pressable" aria-label="Hồ sơ" onClick={() => nav.openRoot('profile')}><Avatar user={user} /></button>
+        <button type="button" data-act="updates" className="topbar-circle pressable" aria-label="Thông báo & Cập nhật" onClick={() => nav.openRoot('notifications')}>
+          <Icon name="megaphone" />
+          {notifUnread ? <i className="badge">{notifUnread > 9 ? '9+' : notifUnread}</i> : null}
+        </button>
         <div className="topbar-center">
           <button type="button" className="pill pill-friends" onClick={openFriends}><Icon name="people" />{friends.length ? `${friends.length} người bạn` : 'Thêm bạn bè'}</button>
           <button type="button" className="pill pill-filter" onClick={(e) => openFilter(e.currentTarget)}>{filterLabel}<Icon name="chevDown" /></button>
         </div>
-        <span className="topbar-right">
-          <button type="button" className="icon-btn" aria-label="Thông báo" onClick={() => nav.openRoot('notifications')}>
-            <Icon name="bell" />{notifUnread ? <i className="badge">{notifUnread > 9 ? '9+' : notifUnread}</i> : null}
+        <button type="button" data-act="profile" className="topbar-avatar-btn pressable" aria-label="Hồ sơ" onClick={() => nav.openRoot('profile', {}, 'right')}>
+          <Avatar user={user} goldBadge={showGoldBadge} />
+        </button>
+      </header>
+
+      {/* Bottom Floating 3-Tab Pill Dock on Camera (Mobile) */}
+      <nav className="camera-dock" aria-label="Điều hướng nhanh">
+        <div className="dock-pill">
+          <button type="button" className="dock-tab pressable" aria-label="Kỷ niệm" onClick={() => nav.openRoot('memories')}>
+            <Icon name="calendar" />
+          </button>
+          <button type="button" className="dock-tab active pressable" aria-label="Máy ảnh" onClick={() => goTo(0)}>
+            <Icon name="homeFill" />
           </button>
           {chatEnabled ? (
-            <button type="button" className="icon-btn" aria-label="Tin nhắn" onClick={() => nav.openRoot('chat')}>
-              <Icon name="chat" />{unread ? <i className="badge">{unread > 9 ? '9+' : unread}</i> : null}
+            <button type="button" className="dock-tab pressable" aria-label="Tin nhắn" onClick={() => nav.openRoot('chat')}>
+              <Icon name="chat" />
+              {unread ? <i className="badge">{unread > 9 ? '9+' : unread}</i> : null}
             </button>
           ) : null}
-        </span>
-      </header>
+        </div>
+      </nav>
 
       <footer className="feedbar">
         <form className={`reply ${typing ? 'typing' : ''}`} hidden={!current || current.mine} onSubmit={sendReply}>
@@ -614,17 +645,28 @@ export function Home({ under }) {
           <button className="send" aria-label="Gửi"><Icon name="arrowUp" /></button>
         </form>
         {current?.mine ? (
-          <button type="button" className="activity" onClick={() => openActivity(current)}>
-            {views.length
-              ? <><span className="stack">{views.slice(0, 3).map((v) => <Avatar key={v.user.uid} user={v.user} />)}</span><span>Hoạt động</span>
-                {activity[current.id]?.summary?.length ? <span className="act-emojis">{activity[current.id].summary.slice(0, 4).map((x) => x.emoji).join('')}</span> : null}</>
-              : <span>{activity[current.id] ? 'Chưa có hoạt động' : 'Xem hoạt động'}</span>}
+          <button type="button" className="activity glass-activity pressable" onClick={() => openActivity(current)}>
+            <span className="act-spark" aria-hidden="true">✨</span>
+            <span>Hoạt động</span>
+            {views.length ? <span className="stack">{views.slice(0, 3).map((v) => <Avatar key={v.user.uid} user={v.user} />)}</span> : null}
+            {activity[current.id]?.summary?.length ? <span className="act-emojis">{activity[current.id].summary.slice(0, 4).map((x) => x.emoji).join('')}</span> : null}
           </button>
         ) : null}
         <nav className="feednav">
-          <button type="button" className="cam-side" aria-label="Tất cả khoảnh khắc" onClick={() => setGrid(true)}><Icon name="grid" /></button>
-          <button type="button" className="shutter-mini" aria-label="Về camera" onClick={() => goTo(0)} />
-          <button type="button" className="cam-side" aria-label="Tùy chọn" onClick={openMore}><Icon name="share" /></button>
+          <button type="button" data-act="grid" className="dock-circle pressable" aria-label="Tất cả khoảnh khắc" onClick={() => setGrid(true)}><Icon name="grid" /></button>
+          <div className="dock-pill feed-dock-pill">
+            <button type="button" data-act="memories" className="dock-tab pressable" aria-label="Kỷ niệm" onClick={() => nav.openRoot('memories')}>
+              <Icon name="calendar" />
+            </button>
+            <button type="button" className="shutter-mini pressable" aria-label="Về camera" onClick={() => goTo(0)} />
+            {chatEnabled ? (
+              <button type="button" data-act="chat" className="dock-tab pressable" aria-label="Tin nhắn" onClick={() => nav.openRoot('chat')}>
+                <Icon name="chat" />
+                {unread ? <i className="badge">{unread > 9 ? '9+' : unread}</i> : null}
+              </button>
+            ) : null}
+          </div>
+          <button type="button" className="dock-circle pressable" aria-label="Chia sẻ & Tùy chọn" onClick={openMore}><Icon name="share" /></button>
         </nav>
       </footer>
 

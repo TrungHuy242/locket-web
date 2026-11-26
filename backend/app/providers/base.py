@@ -30,8 +30,11 @@ class Provider:
     # account
     def me(self, refresh: bool = False) -> dict: raise NotImplementedError
     def update_name(self, first_name: str, last_name: str) -> dict: raise NotImplementedError
+    def update_birthdate(self, birthdate: str) -> dict: raise NotImplementedError
     def update_avatar(self, image: bytes) -> dict: raise NotImplementedError
     def set_notifications(self, enabled: bool) -> dict: raise NotImplementedError
+    def change_password(self, new_password: str) -> dict: raise NotImplementedError
+    def send_password_reset(self, email: Optional[str] = None) -> dict: raise NotImplementedError
 
     # moments
     def feed(self, before: Optional[str] = None, limit: int = 30, refresh: bool = False) -> dict: raise NotImplementedError

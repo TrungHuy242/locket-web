@@ -41,6 +41,16 @@ class _MockUserProvider(Provider):
     def send_message(self, peer_uid: str, text: str, moment_id=None) -> dict:
         return {"id": "msg1", "text": text}
 
+    def update_birthdate(self, birthdate: str) -> dict:
+        self._me["birthdate"] = birthdate
+        return dict(self._me)
+
+    def change_password(self, new_password: str) -> dict:
+        return {"ok": True}
+
+    def send_password_reset(self, email=None) -> dict:
+        return {"ok": True, "email": email or self._me["email"]}
+
     def logout(self) -> None:
         pass
 
@@ -566,4 +576,120 @@ def test_admin_v2_user_drawer_notes_whitelist_sort_and_diagnostics(isolated_data
     assert checks["weather"]["ok"] is True
     assert checks["music"]["ok"] is True
     assert checks["places"]["ok"] is True
+
+
+def test_locket_gold_vip_feedback_inbox_and_account_mutations(isolated_data, monkeypatch):
+    _reset_admin_limits()
+    with main._fb_lock:
+        main._fb_attempts.clear()
+    monkeypatch.setattr(config, "ADMIN_PATH", "portal-gold-vip-88")
+    monkeypatch.setattr(config, "ADMIN_PASSWORD", "goldpass")
+    monkeypatch.setattr(config, "ADMIN_EMAILS", frozenset({"owner@example.com"}))
+    monkeypatch.setattr(config, "ADMIN_UIDS", frozenset({"uid_owner"}))
+
+    # Register a regular user session and an owner session
+    sid_user = main.store.new_id()
+    main.store.register(sid_user, _MockUserProvider("uid_member", "member@example.com", "Minh", "minh24"))
+    sid_owner = main.store.new_id()
+    main.store.register(sid_owner, _MockUserProvider("uid_owner", "owner@example.com", "Huy", "trunghuy"))
+
+    user_client = TestClient(main.app)
+    user_client.cookies.set(config.COOKIE_NAME, sid_user)
+
+    owner_client = TestClient(main.app)
+    owner_client.cookies.set(config.COOKIE_NAME, sid_owner)
+
+    # 1. Regular user defaults to non-Gold; Owner automatically has Gold
+    s_user = user_client.get("/api/session").json()
+    assert s_user["authenticated"] is True
+    assert s_user["user"]["gold"]["active"] is False
+    assert "isAdmin" not in s_user
+
+    s_owner = owner_client.get("/api/session").json()
+    assert s_owner["user"]["gold"]["active"] is True
+    assert s_owner["isAdmin"] is True
+
+    # 2. Regular user probing Admin Gold / Feedback routes gets Stealth 404
+    assert user_client.get("/api/admin/feedback").status_code == 404
+    assert user_client.post("/api/admin/users/uid_member/gold", json={"enabled": True}, headers=HEADERS).status_code == 404
+
+    # 3. Regular user updates birthdate, changes password, and submits a Locket Gold request + bug report
+    r_bd_bad = user_client.patch("/api/me/birthdate", json={"birthdate": "2099-99-99"}, headers=HEADERS)
+    assert r_bd_bad.status_code == 422
+
+    r_bd_ok = user_client.patch("/api/me/birthdate", json={"birthdate": "2004-08-15"}, headers=HEADERS)
+    assert r_bd_ok.status_code == 200
+    assert r_bd_ok.json()["birthdate"] == "2004-08-15"
+
+    assert user_client.post("/api/me/password", json={"newPassword": "newsecurepassword"}, headers=HEADERS).status_code == 200
+    assert user_client.post("/api/me/password-reset", headers=HEADERS).status_code == 200
+
+    r_fb1 = user_client.post(
+        "/api/feedback",
+        json={
+            "category": "gold_request",
+            "title": "Xin mở khóa Locket Gold",
+            "message": "Admin cấp Gold cho mình dùng chủ đề máy ảnh nhé!",
+            "meta": {"platform": "iPhone", "appIcon": "classic"},
+        },
+        headers=HEADERS,
+    )
+    assert r_fb1.status_code == 200
+    fb1_id = r_fb1.json()["id"]
+
+    r_fb2 = user_client.post(
+        "/api/feedback",
+        json={"category": "bug", "title": "Lỗi nhỏ", "message": "Kiểm tra hộp thư báo lỗi"},
+        headers=HEADERS,
+    )
+    assert r_fb2.status_code == 200
+    fb2_id = r_fb2.json()["id"]
+
+    # 4. Owner sees openFeedback=2 in Overview and manages Feedback + grants Locket Gold VIP
+    ov = owner_client.get("/api/admin/overview").json()
+    assert ov["kpi"]["openFeedback"] == 2
+    assert ov["kpi"]["goldUsers"] == 0
+
+    fb_gold = owner_client.get("/api/admin/feedback", params={"category": "gold_request"}).json()
+    assert fb_gold["counts"]["gold_request"] == 1
+    assert fb_gold["items"][0]["id"] == fb1_id
+    assert fb_gold["items"][0]["isGold"] is False
+
+    # Grant Gold VIP to uid_member
+    r_grant = owner_client.post(
+        "/api/admin/users/uid_member/gold",
+        json={"enabled": True, "note": "Bạn thân VIP"},
+        headers=HEADERS,
+    )
+    assert r_grant.status_code == 200
+    assert r_grant.json()["isGold"] is True
+
+    # Regular user immediately receives Gold VIP on /api/me and /api/session!
+    me_after = user_client.get("/api/me").json()
+    assert me_after["gold"]["active"] is True
+    assert me_after["gold"]["tier"] == "vip"
+
+    # Filter users by gold
+    gold_users = owner_client.get("/api/admin/users", params={"filter": "gold"}).json()
+    assert any(u["uid"] == "uid_member" and u["isGold"] is True for u in gold_users["users"])
+
+    # Resolve Gold request & delete bug report
+    r_patch = owner_client.patch(
+        f"/api/admin/feedback/{fb1_id}",
+        json={"status": "resolved", "adminNote": "Đã duyệt VIP"},
+        headers=HEADERS,
+    )
+    assert r_patch.status_code == 200
+    assert r_patch.json()["item"]["status"] == "resolved"
+    assert r_patch.json()["item"]["isGold"] is True
+
+    assert owner_client.delete(f"/api/admin/feedback/{fb2_id}", headers=HEADERS).status_code == 200
+    ov2 = owner_client.get("/api/admin/overview").json()
+    assert ov2["kpi"]["openFeedback"] == 0
+    assert ov2["kpi"]["goldUsers"] == 1
+
+    # Revoke Gold VIP -> user reverts to free
+    owner_client.post("/api/admin/users/uid_member/gold", json={"enabled": False}, headers=HEADERS)
+    assert user_client.get("/api/session").json()["user"]["gold"]["active"] is False
+
 

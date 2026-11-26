@@ -9,6 +9,7 @@ import { ui } from '../../ui/overlays.jsx';
 const FEATURE_META = [
   ['photobooth', 'Photobooth ghép ảnh 1:1', 'Chế độ chụp nhiều tấm, chọn ảnh từ thư viện, khung trang trí và sticker'],
   ['boothVideo', 'Video động Photobooth', 'Xuất video 1:1 có hiệu ứng chuyển động từ bộ ảnh Photobooth (tốn CPU trình duyệt)'],
+  ['cameraLooks', 'Diện mạo & Sticker khuôn mặt AR', 'Bộ phụ kiện bám theo khuôn mặt trực tiếp trên ống kính và tạo diện mạo từ ảnh riêng'],
   ['smartCaptions', 'Chú thích thông minh (Nhạc / Thời tiết / Vị trí)', 'Tra cứu bài hát Spotify/iTunes, thời tiết trực tiếp và check-in địa điểm'],
   ['zipExport', 'Xuất album ZIP Kỷ niệm', 'Cho phép người dùng chọn nhiều khoảnh khắc tải xuống dạng file .zip (tốn băng thông)'],
   ['chat', 'Tin nhắn trò chuyện', 'Nhắn tin trực tiếp và đồng bộ tin nhắn chưa đọc với bạn bè ngay trên web'],
@@ -24,6 +25,7 @@ function pickFields(c) {
     features: {
       photobooth: c.features?.photobooth !== false,
       boothVideo: c.features?.boothVideo !== false,
+      cameraLooks: c.features?.cameraLooks !== false,
       smartCaptions: c.features?.smartCaptions !== false,
       zipExport: c.features?.zipExport !== false,
       chat: c.features?.chat !== false,
